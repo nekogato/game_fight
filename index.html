@@ -15,7 +15,12 @@
           <span class="brand-mark">✦</span>
           <span><b>森之漫遊</b><small>ENDLESS FOREST</small></span>
         </a>
-        <div class="status"><i></i><span>森林正在甦醒</span></div>
+        <div class="topbar-actions">
+          <div class="status"><i></i><span>森林正在甦醒</span></div>
+          <button class="music-toggle" id="musicToggle" type="button" aria-pressed="true" title="關閉背景音樂">
+            <span aria-hidden="true">♫</span><b>MUSIC ON</b>
+          </button>
+        </div>
       </header>
 
       <aside class="hero-card" aria-label="在線玩家">
@@ -48,7 +53,12 @@
       <div class="coordinates"><span>霧林區域</span><b id="coords">N 00 · E 00</b><em id="bossTracker">正在尋找首領蹤跡…</em><button id="returnBtn" type="button">返回重生點</button></div>
       <div class="wallet"><img src="/images/coin.svg" alt="Coin"><b id="coinCount">0</b></div>
       <div class="room-hud hidden" id="roomHud"><span>CO-OP</span><b id="roomLabel">ROOM ------</b><small id="playerCount">1 / 4 PLAYERS</small><button id="leaveRoomBtn" type="button">離開</button></div>
+      <div class="room-recovery hidden" id="roomRecovery"><span>CO-OP RESET</span><b>舊房間已被免費伺服器清除</b><small>你的本地旅程仍然保留，可以立即建立新房間。</small><button id="createNewRoomBtn" type="button">建立新房間</button></div>
       <div class="loader" id="loader"><span></span><p>正在喚醒森林…</p></div>
+      <audio id="bgm" class="game-audio" src="/music/bgm.mp3" loop preload="auto"></audio>
+      <audio id="walkingSound" class="game-audio" src="/music/walking.mp3" loop preload="auto"></audio>
+      <audio id="hitSound" class="game-audio" src="/music/hit.mp3" preload="auto"></audio>
+      <audio id="coinSound" class="game-audio" src="/music/coin.mp3" preload="auto"></audio>
     </div>
     <script type="module" src="/src/main.js"></script>
   </body>
