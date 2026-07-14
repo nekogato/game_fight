@@ -27,15 +27,39 @@ scene.add(sun,sun.target);
 const heroSpotlight=new THREE.SpotLight(0xd9ccff,8,30,.72,.78,1.45);heroSpotlight.position.set(4,10,5);heroSpotlight.castShadow=false;scene.add(heroSpotlight,heroSpotlight.target);
 
 const world = new THREE.Group(); scene.add(world);
+const combatParticleGroup=new THREE.Group(),combatParticles=[],combatParticleGeometry=new THREE.SphereGeometry(.085,6,5),combatParticleMaterials=new Map();scene.add(combatParticleGroup);
+const combatParticleColors={run:[0xb78a5f,0x8f694b],takeoff:[0xd8efad,0xf3d998],land:[0xd9aa72,0xf0d09b],hit:[0xffdd62,0xff9f43],critical:[0xfff0a3,0xff63ad,0xffffff],heal:[0xff8fcf,0xf7c1df,0xffd9ef]};
+
+function particleMaterial(color){if(!combatParticleMaterials.has(color))combatParticleMaterials.set(color,new THREE.MeshBasicMaterial({color,transparent:true,depthWrite:false,blending:THREE.AdditiveBlending}));return combatParticleMaterials.get(color);}
+
+function emitCombatParticles(position,type,direction=null){
+  const settings={run:{count:3,life:.3,speed:1.15,size:.6},takeoff:{count:10,life:.5,speed:2.8,size:.85},land:{count:14,life:.55,speed:3.5,size:1},hit:{count:11,life:.48,speed:4.6,size:1},critical:{count:24,life:.72,speed:7,size:1.35},heal:{count:42,life:1.5,speed:1.35,size:1.9}}[type];if(!settings)return;
+  const colors=combatParticleColors[type],baseY=(type==='hit'||type==='critical') ? .62 : type==='heal' ? .38 : .08;
+  for(let i=0;i<settings.count;i++){
+    const angle=Math.random()*Math.PI*2,mesh=new THREE.Mesh(combatParticleGeometry,particleMaterial(colors[i%colors.length]));mesh.position.set(position.x+(Math.random()-.5)*(type==='heal'?.75:.28),position.y+baseY+Math.random()*(type==='heal'?.9:.18),position.z+(Math.random()-.5)*(type==='heal'?.75:.28));mesh.renderOrder=8;
+    let vx=Math.cos(angle)*settings.speed*(.35+Math.random()*.65),vz=Math.sin(angle)*settings.speed*(.35+Math.random()*.65),vy;
+    if(type==='run'){vx*=.55;vz*=.55;vy=.25+Math.random()*.45;}
+    else if(type==='heal'){vx*=.58;vz*=.58;vy=.65+Math.random()*1.25;}
+    else if(type==='land'){vy=.35+Math.random()*.7;}
+    else if(type==='takeoff'){vy=1.4+Math.random()*2.4;}
+    else{vx+=(direction?.x||0)*settings.speed*.65;vz+=(direction?.z||0)*settings.speed*.65;vy=1.4+Math.random()*settings.speed*.65;}
+    const scale=settings.size*(.55+Math.random()*.75);mesh.scale.setScalar(scale);combatParticleGroup.add(mesh);combatParticles.push({mesh,vx,vy,vz,life:settings.life,startLife:settings.life,gravity:type==='heal'?-.12:type==='run'?2.5:type==='land'?4.5:7,spin:(Math.random()-.5)*8});
+  }
+}
+
+function updateCombatParticles(dt){
+  for(let i=combatParticles.length-1;i>=0;i--){const particle=combatParticles[i];particle.life-=dt;if(particle.life<=0){combatParticleGroup.remove(particle.mesh);combatParticles.splice(i,1);continue;}particle.vy-=particle.gravity*dt;particle.mesh.position.x+=particle.vx*dt;particle.mesh.position.y+=particle.vy*dt;particle.mesh.position.z+=particle.vz*dt;particle.mesh.rotation.y+=particle.spin*dt;particle.mesh.scale.multiplyScalar(Math.max(.82,1-dt*3.6));}
+}
 const TILE = 32, GRID = 5;
 const DAY_LENGTH=240,WEATHER_REGION_SIZE=TILE*3;
 const weatherProfiles={
-  clear:{label:'晴朗',sun:1,fog:.017,rain:0,cloud:.02},
-  cloudy:{label:'陰天',sun:.58,fog:.022,rain:0,cloud:.72},
-  mist:{label:'霧天',sun:.42,fog:.036,rain:0,cloud:.55},
-  rain:{label:'雨天',sun:.36,fog:.028,rain:1,cloud:.9}
+  clear:{label:'晴朗',sun:1,fog:.017,rain:0,cloud:.02,mist:0},
+  cloudy:{label:'陰天',sun:.58,fog:.022,rain:0,cloud:.72,mist:0},
+  mist:{label:'粉紅薄霧',sun:.52,fog:.024,rain:0,cloud:.42,mist:1},
+  rain:{label:'雨天',sun:.36,fog:.028,rain:1,cloud:.9,mist:0}
 };
-const weatherState={key:'',name:'clear',sun:1,fog:.017,rain:0,cloud:.02};
+const weatherState={key:'',name:'clear',sun:1,fog:.017,rain:0,cloud:.02,mist:0};
+const worldCycleState={phase:.3,time:'morning'};
 const leafMats = [0x244e2d,0x315e35,0x406b3a].map(c => new THREE.MeshStandardMaterial({color:c,roughness:1}));
 const rockMat = new THREE.MeshStandardMaterial({color:0x667064,roughness:1});
 const groundMat = new THREE.MeshStandardMaterial({color:0x29452c,roughness:1});
@@ -45,6 +69,7 @@ const platformTemplates=new Map(),decorTemplates=new Map(),coinTemplates=new Map
 const bossArenaGroup=new THREE.Group();scene.add(bossArenaGroup);
 const BOSS_ARENA_CLEAR_RADIUS=14,BOSS_ARENA_RING_RADIUS=15.8,BOSS_ARENA_LOAD_RADIUS=98;
 const collectedCoins=new Set();
+const coinLayoutSeed=(Math.random()*0x7fffffff)|0;
 const coinDefs=[['coin-bronze',1],['coin-bronze',1],['coin-silver',3],['coin-gold',5]];
 let coinBalance=0;
 const platformDefs=[
@@ -77,12 +102,12 @@ function addGrassBlock(tile,props,def,x,z,y=0,rotation=0){
 
 function populate(tile,tx,tz){
   const props=tile.userData.props;props.clear();tile.userData.colliders=[];tile.userData.obstacles=[];tile.userData.coins=[];
-  const random=rng(hash(tx,tz)),occupied=[];
+  const random=rng(hash(tx,tz)),coinRandom=rng(hash(tx,tz)^coinLayoutSeed),occupied=[];
   const isFree=(x,z,radius)=>occupied.every(o=>Math.hypot(x-o.x,z-o.z)>radius+o.radius+.25);
   const reserve=(x,z,radius)=>occupied.push({x,z,radius});
-  const findSpot=(radius,range=TILE-3,clearCenter=true)=>{
+  const findSpot=(radius,range=TILE-3,clearCenter=true,randomSource=random)=>{
     for(let attempt=0;attempt<24;attempt++){
-      const x=(random()-.5)*range,z=(random()-.5)*range;
+      const x=(randomSource()-.5)*range,z=(randomSource()-.5)*range;
       if(clearCenter&&Math.abs(x)<4&&Math.abs(z)<4)continue;
       if(isFree(x,z,radius))return [x,z];
     }
@@ -122,8 +147,8 @@ function populate(tile,tx,tz){
 
   coinDefs.forEach(([name,value],i)=>{
     const id=`${tx}:${tz}:${i}`,template=coinTemplates.get(name);if(!template||collectedCoins.has(id))return;
-    const spot=findSpot(.35,TILE-3,false);if(!spot)return;
-    const coin=template.clone(true);coin.scale.setScalar(.02);coin.position.set(spot[0],.12,spot[1]);coin.userData={coinId:id,value,baseY:.12,baseScale:1.35,spawnTime:0,phase:random()*Math.PI*2,collecting:false,collectTime:0};props.add(coin);tile.userData.coins.push(coin);reserve(spot[0],spot[1],.35);
+    const spot=findSpot(.35,TILE-3,false,coinRandom);if(!spot)return;
+    const coin=template.clone(true);coin.scale.setScalar(.02);coin.position.set(spot[0],.12,spot[1]);coin.userData={coinId:id,value,baseY:.12,baseScale:1.35,spawnTime:0,phase:coinRandom()*Math.PI*2,collecting:false,collectTime:0};props.add(coin);tile.userData.coins.push(coin);reserve(spot[0],spot[1],.35);
   });
 }
 
@@ -188,7 +213,7 @@ const hero=new THREE.Group(); hero.position.set(0,0,0); scene.add(hero);
 const shadow=new THREE.Mesh(new THREE.CircleGeometry(.7,24),new THREE.MeshBasicMaterial({color:0x071009,transparent:true,opacity:.35,depthWrite:false})); shadow.rotation.x=-Math.PI/2; shadow.position.y=.015; scene.add(shadow);
 const heroRig=[];
 let heroModel=null;
-let remoteCharacterTemplate=null,multiplayerSocket=null,localPlayerId='',currentRoom='',lastNetworkSend=0;
+let remoteCharacterTemplate=null,multiplayerSocket=null,localPlayerId='',currentRoom='',lastNetworkSend=0,lastPlayerCardUpdate=0,localDisplayName='小森',worldTimeOffset=0;
 const remotePlayers=new Map(),pendingRemotePlayers=new Map();
 const sharedBossStates=new Map();
 const pendingSharedEncounters=new Map();
@@ -288,7 +313,7 @@ function addRemotePlayer(data){
   removeRemotePlayer(data.id);
   const player=new THREE.Group(),model=prepModel(cloneModelUnique(remoteCharacterTemplate),2.25);model.rotation.y=0;player.add(model,createPlayerNameLabel(data.name||'旅人'));
   const state=data.state||{};player.position.set(Number(state.x)||0,Number(state.y)||0,Number(state.z)||0);player.rotation.y=Number(state.rotation)||0;
-  player.userData.targetPosition=player.position.clone();player.userData.targetRotation=player.rotation.y;player.userData.networkMoving=Boolean(state.moving);player.userData.rig=createCharacterWalkRig(model);player.userData.phase=0;player.userData.weight=0;player.userData.model=model;player.userData.companions=new Map();
+  player.userData.targetPosition=player.position.clone();player.userData.targetRotation=player.rotation.y;player.userData.networkMoving=Boolean(state.moving);player.userData.rig=createCharacterWalkRig(model);player.userData.phase=0;player.userData.weight=0;player.userData.model=model;player.userData.companions=new Map();player.userData.displayName=data.name||'旅人';
   scene.add(player);remotePlayers.set(data.id,player);syncRemoteCompanions(player,state.companions||[]);pendingRemotePlayers.delete(data.id);updateRoomHud();
 }
 
@@ -324,7 +349,19 @@ function updateRemotePlayers(dt){
 
 function updateRoomHud(){
   const hud=document.querySelector('#roomHud');if(!hud)return;
-  hud.classList.toggle('hidden',!currentRoom);document.querySelector('#roomLabel').textContent=`ROOM ${currentRoom||'------'}`;document.querySelector('#playerCount').textContent=`${Math.min(4,remotePlayers.size+1)} / 4 PLAYERS`;
+  hud.classList.toggle('hidden',!currentRoom);document.querySelector('#roomLabel').textContent=`ROOM ${currentRoom||'------'}`;document.querySelector('#playerCount').textContent=`${Math.min(4,remotePlayers.size+1)} / 4 PLAYERS`;updateOnlinePlayerCard(true);
+}
+
+function relativePlayerLocation(player){
+  const dx=player.position.x-hero.position.x,dz=player.position.z-hero.position.z,distance=Math.round(Math.hypot(dx,dz));if(distance<3)return '就在你身旁';
+  const directions=['北','東北','東','東南','南','西南','西','西北'],direction=directions[(Math.round(Math.atan2(dx,dz)/(Math.PI/4))+8)%8];return `${direction}方 ${distance}m`;
+}
+
+function updateOnlinePlayerCard(force=false,t=0){
+  if(!force&&t-lastPlayerCardUpdate<.25)return;lastPlayerCardUpdate=t;const list=document.querySelector('#onlinePlayerList');if(!list)return;list.replaceChildren();
+  const makeRow=(name,detail,local=false)=>{const row=document.createElement('div'),badge=document.createElement('span'),text=document.createElement('div'),title=document.createElement('b'),location=document.createElement('small');row.className=`online-player${local?' local':''}`;badge.textContent=local?'主':(name.trim()[0]||'旅');title.textContent=name;location.textContent=detail;text.append(title,location);row.append(badge,text);return row;};
+  list.append(makeRow(localDisplayName,currentRoom?'你 · 同房在線':'你 · 本地漫遊',true));
+  remotePlayers.forEach(player=>list.append(makeRow(player.userData.displayName||'旅人',relativePlayerLocation(player))));
 }
 
 function setCoopStatus(message,error=false){const status=document.querySelector('#coopStatus');status.textContent=message;status.classList.toggle('error',error);}
@@ -371,17 +408,17 @@ function leaveRoom(showMessage=true){
   if(showMessage)setCoopStatus('已離開房間，現在是單人漫遊。');
 }
 
-function startGame(){started=true;document.querySelector('#intro').classList.add('hidden');document.querySelector('#hint').classList.remove('faded');}
+function startGame(){localDisplayName=document.querySelector('#playerName').value.trim()||'小森';started=true;document.querySelector('#intro').classList.add('hidden');document.querySelector('#hint').classList.remove('faded');updateOnlinePlayerCard(true);}
 
 function connectToRoom(room,name,create=false){
   if(multiplayerSocket)leaveRoom(false);const code=room.toUpperCase().replace(/[^A-Z0-9]/g,'').slice(0,6);
   if(code.length<4){setCoopStatus('請輸入 4–6 位房間代碼。',true);return;}
-  document.querySelectorAll('.coop-panel button').forEach(button=>button.disabled=true);setCoopStatus('正在連接森林旅伴…');
+  localDisplayName=name||'旅人';document.querySelectorAll('.coop-panel button').forEach(button=>button.disabled=true);setCoopStatus('正在連接森林旅伴…');
   const protocol=location.protocol==='https:'?'wss':'ws',socket=new WebSocket(`${protocol}://${location.host}/multiplayer`);multiplayerSocket=socket;
-  socket.onopen=()=>socket.send(JSON.stringify({type:'join',room:code,name:name||'旅人',create}));
+  socket.onopen=()=>socket.send(JSON.stringify({type:'join',room:code,name:name||'旅人',create,worldTime:clock.elapsedTime+worldTimeOffset}));
   socket.onmessage=event=>{
     let message;try{message=JSON.parse(event.data);}catch{return;}
-    if(message.type==='welcome'){localPlayerId=message.id;currentRoom=message.room;Object.entries(message.world?.bosses||{}).forEach(([region,ratio])=>applySharedBossState(region,ratio));(message.world?.encounters||[]).forEach(ensureSharedEncounter);message.players.forEach(addRemotePlayer);updateRoomHud();setCoopStatus(`已加入房間 ${currentRoom}`);startGame();}
+    if(message.type==='welcome'){localPlayerId=message.id;currentRoom=message.room;const roomElapsed=Number(message.world?.timeElapsed);if(Number.isFinite(roomElapsed))worldTimeOffset=roomElapsed-clock.elapsedTime;Object.entries(message.world?.bosses||{}).forEach(([region,ratio])=>applySharedBossState(region,ratio));(message.world?.encounters||[]).forEach(ensureSharedEncounter);message.players.forEach(addRemotePlayer);updateRoomHud();setCoopStatus(`已加入房間 ${currentRoom}`);startGame();}
     else if(message.type==='player_joined')addRemotePlayer(message.player);
     else if(message.type==='player_left')removeRemotePlayer(message.id);
     else if(message.type==='state'){const player=remotePlayers.get(message.id);if(player){player.userData.targetPosition.set(message.state.x,message.state.y,message.state.z);player.userData.targetRotation=message.state.rotation;player.userData.networkMoving=message.state.moving;syncRemoteCompanions(player,message.state.companions||[]);}else{const pending=pendingRemotePlayers.get(message.id);if(pending){pending.state=message.state;pendingRemotePlayers.set(message.id,pending);}}}
@@ -415,6 +452,30 @@ const animalBaseStats={
   'animal-hog':{hp:62,attack:13,defense:6,speed:6},'animal-monkey':{hp:46,attack:10,defense:4,speed:7.2},
   'animal-tiger':{hp:72,attack:15,defense:5,speed:7},'animal-parrot':{hp:38,attack:9,defense:3,speed:8}
 };
+const animalAffinities={
+  'animal-deer':{time:'morning',weather:'mist'},
+  'animal-fox':{time:'night',weather:'mist'},
+  'animal-bunny':{time:'morning',weather:'clear'},
+  'animal-panda':{time:'afternoon',weather:'cloudy'},
+  'animal-hog':{time:'evening',weather:'rain'},
+  'animal-monkey':{time:'afternoon',weather:'clear'},
+  'animal-tiger':{time:'night',weather:'rain'},
+  'animal-parrot':{time:'morning',weather:'cloudy'}
+};
+const affinityTimeLabels={morning:'清晨與上午',afternoon:'午後',evening:'黃昏與入夜',night:'深夜'};
+
+function timeAffinityAt(phase){
+  if(phase>=.2&&phase<.45)return 'morning';
+  if(phase>=.45&&phase<.67)return 'afternoon';
+  if(phase>=.67&&phase<.82)return 'evening';
+  return 'night';
+}
+
+function animalAffinityEffect(animal){
+  const affinity=animalAffinities[animal.userData.species],timeMatch=affinity?.time===worldCycleState.time,weatherMatch=affinity?.weather===weatherState.name;
+  const power=1+(timeMatch ? .1 : 0)+(weatherMatch ? .1 : 0)+(timeMatch&&weatherMatch ? .05 : 0);
+  return {timeMatch,weatherMatch,power,speed:1+(power-1)*.65};
+}
 const animalPersonalityDefs={
   fierce:{label:'勇猛好戰',willingness:1,attackChance:.76,evadeChance:.08,dodgeChance:.1,roamTime:.55,chainLimit:3},
   wary:{label:'謹慎避戰',willingness:.28,attackChance:.25,evadeChance:.52,dodgeChance:.64,roamTime:1.25,chainLimit:2},
@@ -424,7 +485,8 @@ const animalPersonalityDefs={
 const animals=[],animalTemplates=new Map(),followers=[],fallenFollowers=[],bosses=[],shopSlots=[0,1,2].map(index=>({index,animal:null,restockTimer:0}));
 const animalRespawns=[];
 const bossRegions=new Map(),BOSS_REGION_SIZE=TILE*4;
-let merchant=null,doctor=null,doctorState=null,purchaseState=null,huntPrompt=null,battle=null,battleActionState=null;
+let merchant=null,doctor=null,doctorState=null,purchaseState=null,huntPrompt=null,battle=null,battleActionState=null,potionCount=0,doctorPotionStock=4,doctorPotionRestockTimer=0;
+const DOCTOR_POTION_MAX_STOCK=4,DOCTOR_POTION_PRICE=30,DOCTOR_POTION_RESTOCK_TIME=38;
 
 function initializeAnimalStats(animal,wild=false){
   const base=animalBaseStats[animal.userData.species]||{hp:45,attack:10,defense:4,speed:6.5};
@@ -485,7 +547,7 @@ function chooseAnimalTarget(a){
 
 function updateAnimals(dt){
   animals.forEach(a=>{
-    if(a.userData.dead||huntPrompt?.target===a||battle?.enemy===a)return;
+    if(a.userData.dead||conversation?.npc===a||huntPrompt?.target===a||battle?.enemy===a)return;
     if(a.userData.sharedEncounterId){if(a.userData.motion){a.userData.motion.walking=false;a.userData.motion.weight=THREE.MathUtils.damp(a.userData.motion.weight,0,7,dt);animateAnimalFeet(a,a.userData.motion.phase,a.userData.motion.weight);}return;}
     a.userData.fatigue=Math.max(0,(a.userData.fatigue||0)-dt*.06);a.userData.exhausted=false;
     const motion=a.userData.motion;
@@ -529,12 +591,28 @@ const conversations=[
   [{speaker:'npc',text:'你有沒有發現，這裡的風總是從同一個方向吹？'},{speaker:'hero',text:'也許風知道森林的出口。'},{speaker:'npc',text:'那我們就聽著樹葉，慢慢走吧。'}],
   [{speaker:'npc',text:'剛才有一隻狐狸偷偷跟著我。'},{speaker:'hero',text:'牠可能只是想交朋友。'},{speaker:'npc',text:'下次見到牠，我會記得打招呼。'}],
   [{speaker:'npc',text:'你也是在這座森林裡旅行嗎？'},{speaker:'hero',text:'嗯，我想看看沒有盡頭的地方會通往哪裡。'},{speaker:'npc',text:'真巧，我也是。希望我們還會再遇見。'}],
-  [{speaker:'npc',text:'草地平台上看見的星星，似乎比地面更多。'},{speaker:'hero',text:'那我今晚也跳上去看看。'},{speaker:'npc',text:'小心別驚醒旁邊睡覺的兔子。'}]
+  [{speaker:'npc',text:'草地平台上看見的星星，似乎比地面更多。'},{speaker:'hero',text:'那我今晚也跳上去看看。'},{speaker:'npc',text:'小心別驚醒旁邊睡覺的兔子。'}],
+  [{speaker:'npc',text:'老人們說，霧林不是沒有盡頭，而是會悄悄把走過的路搬到身後。'},{speaker:'hero',text:'所以地圖才總像在改變嗎？'},{speaker:'npc',text:'也許。只有記得同行者名字的人，才不會被森林繞回原地。'}],
+  [{speaker:'npc',text:'深夜的螢火蟲不全是蟲，有些是迷路旅人的夢。'},{speaker:'hero',text:'要怎樣分辨牠們？'},{speaker:'npc',text:'真正的螢火蟲怕雨，夢的光卻會在雨裡變得更亮。'}],
+  [{speaker:'npc',text:'聽說每一位地區首領，從前都是守護森林邊界的動物。'},{speaker:'hero',text:'那牠們為甚麼會攻擊我們？'},{speaker:'npc',text:'牠們不是憎恨旅人，只是在確認我們有沒有保護同伴的力量。'}],
+  [{speaker:'npc',text:'下雨後如果看見石頭上出現發光的腳印，千萬不要急著追。'},{speaker:'hero',text:'腳印會通往哪裡？'},{speaker:'npc',text:'有人說是古老獸王的巢，也有人追著走，第二天卻從森林另一端醒來。'}],
+  [{speaker:'npc',text:'這裡的樹根會記住聲音。把秘密告訴老樹，很多年後葉子仍會低聲重複。'},{speaker:'hero',text:'那森林一定知道很多故事。'},{speaker:'npc',text:'也知道很多不該再被提起的名字。'}],
+  [{speaker:'npc',text:'你撿到的 coin，也許不是普通錢幣。傳說它們是消失王國留下的承諾。'},{speaker:'hero',text:'承諾也能拿來買東西嗎？'},{speaker:'npc',text:'只要仍有人相信它有價值，承諾就還沒有完全消失。'}],
+  [{speaker:'npc',text:'清晨最安靜的那一刻，我偶爾會聽到地底傳來鐘聲。'},{speaker:'hero',text:'森林下面有鐘樓？'},{speaker:'npc',text:'傳說整座森林長在一座沉睡城市之上，樹根就是它最後的街道。'}],
+  [{speaker:'npc',text:'粉紅霧出現時，最好留意影子的方向。'},{speaker:'hero',text:'霧裡的影子有甚麼特別？'},{speaker:'npc',text:'如果影子沒有跟著你移動，那可能是森林裡另一個「你」正在看著這邊。'}],
+  [{speaker:'npc',text:'那些看似隨意的木柵欄，其實全都朝向森林外面。'},{speaker:'hero',text:'不是用來阻止我們進去嗎？'},{speaker:'npc',text:'不。很久以前，人們建造它們，是怕外面的某樣東西走進森林。'}],
+  [{speaker:'npc',text:'動物升級時的特殊叫聲，據說會被遠方的古老巨獸聽見。'},{speaker:'hero',text:'牠們會回應嗎？'},{speaker:'npc',text:'有時夜裡那聲很低的吼叫，就是牠們在向年輕的生命祝福。'}],
+  [{speaker:'npc',text:'森林醫生很少談自己的過去，但有人看過他和地區首領和平地坐在一起。'},{speaker:'hero',text:'也許他以前就認識牠們。'},{speaker:'npc',text:'又或者，他比我們想像中更早來到這座森林。'}],
+  [{speaker:'npc',text:'如果風突然完全停下來，就在附近找一塊沒有長草的石頭。'},{speaker:'hero',text:'石頭下面藏著東西嗎？'},{speaker:'npc',text:'我不知道。傳說有人把耳朵貼上去，聽見了森林明天才會發生的事。'}]
 ];
 const merchantConversations=[
   [{speaker:'npc',text:'今天的森林很安靜，適合慢慢散步。'},{speaker:'hero',text:'你每天都會在這裡嗎？'},{speaker:'npc',text:'只要動物需要一個家，我就會留在這裡。'}],
   [{speaker:'npc',text:'銀色 coin 在月光下特別容易找到。'},{speaker:'hero',text:'謝謝你的提示。'},{speaker:'npc',text:'不用客氣，路上小心。'}],
-  [{speaker:'npc',text:'每隻動物都有自己的個性，不一定要買東西，也可以先和牠們相處。'},{speaker:'hero',text:'我會好好認識牠們的。'}]
+  [{speaker:'npc',text:'每隻動物都有自己的個性，不一定要買東西，也可以先和牠們相處。'},{speaker:'hero',text:'我會好好認識牠們的。'}],
+  [{speaker:'npc',text:'有人問我這些動物從哪裡來。其實很多時候，是牠們自己找到我的。'},{speaker:'hero',text:'牠們知道你會替牠們找同伴。'},{speaker:'npc',text:'也可能是森林在替旅人挑選彼此。'}],
+  [{speaker:'npc',text:'金色 coin 上的花紋，是一種已經沒有人會寫的文字。'},{speaker:'hero',text:'上面寫了甚麼？'},{speaker:'npc',text:'一位學者說那是「歸來」，但他走進霧裡後就再也沒回來。'}],
+  [{speaker:'npc',text:'首領附近的森林看似封閉，其實樹木會為真正需要離開的人讓路。'},{speaker:'hero',text:'要怎樣請樹木讓開？'},{speaker:'npc',text:'不是用說的。森林會看你如何對待並肩作戰的動物。'}],
+  [{speaker:'npc',text:'我從不把動物稱作商品。coin 只是旅人願意負起責任的證明。'},{speaker:'hero',text:'所以牠們最後仍是自己選擇跟誰走。'},{speaker:'npc',text:'沒錯。若牠不願意，再多 coin 也留不住牠。'}]
 ];
 const animalVoices={
   'animal-deer':['呦——呦！','呦嗚～'],
@@ -555,11 +633,13 @@ function animalConversationsFor(animal){
     fierce:'不可以隨便咬人，知道嗎？',wary:'不用一直躲得那麼遠，這裡很安全。',
     playful:'你真是活潑好動呢，一刻也停不下來。',steady:'你總是不慌不忙，待在你身邊很安心。'
   }[animal.userData.personality]||'今天也要好好相處喔。';
-  const healthHint={speaker:'hero',text:healthText},growthHint={speaker:'hero',text:growthText},personalityHint={speaker:'hero',text:personalityText};
+  const affinity=animalAffinities[animal.userData.species],affinityText=affinity?`每到${affinityTimeLabels[affinity.time]}，尤其碰上${weatherProfiles[affinity.weather].label}，你總會顯得格外有精神呢。`:'你似乎很懂得從森林的天氣中取得力量。';
+  const healthHint={speaker:'hero',text:healthText},growthHint={speaker:'hero',text:growthText},personalityHint={speaker:'hero',text:personalityText},affinityHint={speaker:'hero',text:affinityText};
   return [
     [{speaker:'npc',text:hello},{speaker:'hero',text:'我也很高興能和你一起旅行。'},{speaker:'npc',text:reply},healthHint],
     [{speaker:'npc',text:reply},{speaker:'hero',text:'前面的森林好像有新味道，對嗎？'},{speaker:'npc',text:hello},growthHint],
-    [{speaker:'npc',text:`${hello} ${reply}`},{speaker:'hero',text:'放心，我會一直陪著你的。'},{speaker:'npc',text:reply},personalityHint]
+    [{speaker:'npc',text:`${hello} ${reply}`},{speaker:'hero',text:'放心，我會一直陪著你的。'},{speaker:'npc',text:reply},personalityHint],
+    [{speaker:'npc',text:reply},affinityHint,{speaker:'npc',text:hello}]
   ];
 }
 const npcBubble=document.createElement('div'),heroBubble=document.createElement('div');
@@ -624,7 +704,7 @@ function updateNpcs(dt){
 }
 
 function resolveRoamingEntitySeparation(){
-  const roamers=[...npcs,...animals.filter(a=>!a.userData.dead&&battle?.enemy!==a&&huntPrompt?.target!==a)];
+  const roamers=[...npcs,...animals.filter(a=>!a.userData.dead&&conversation?.npc!==a&&battle?.enemy!==a&&huntPrompt?.target!==a)];
   for(let i=0;i<roamers.length;i++)for(let j=i+1;j<roamers.length;j++){
     const a=roamers[i],b=roamers[j];
     if(Math.abs(a.position.y-b.position.y)>1)continue;
@@ -640,7 +720,15 @@ function resolveRoamingEntitySeparation(){
 }
 
 function startConversation(npc,scripts=conversations){
-  if(purchaseState)closePurchase();if(doctorState)closeDoctor();if(huntPrompt)closeHuntPrompt();conversation={npc,script:scripts[Math.floor(Math.random()*scripts.length)],index:0,elapsed:0};moving=false;marker.visible=false;
+  if(purchaseState)closePurchase();if(doctorState)closeDoctor();if(huntPrompt)closeHuntPrompt();
+  let scriptIndex=Math.floor(Math.random()*scripts.length);if(scripts.length>1&&scriptIndex===npc.userData.lastConversationIndex)scriptIndex=(scriptIndex+1+Math.floor(Math.random()*(scripts.length-1)))%scripts.length;npc.userData.lastConversationIndex=scriptIndex;
+  conversation={npc,script:scripts[scriptIndex],index:0,elapsed:0};moving=false;marker.visible=false;
+}
+
+function startBossConversation(boss,onComplete){
+  if(purchaseState)closePurchase();if(doctorState)closeDoctor();if(huntPrompt)closeHuntPrompt();
+  if(boss.userData.motion){boss.userData.motion.walking=false;boss.userData.motion.weight=0;animateAnimalFeet(boss,boss.userData.motion.phase,0);}
+  conversation={npc:boss,script:bossConversationFor(boss),index:0,elapsed:0,lineDuration:3.8,onComplete};moving=false;marker.visible=false;
 }
 
 function positionSpeechBubble(element,object,height){
@@ -652,18 +740,19 @@ function positionSpeechBubble(element,object,height){
 function advanceConversation(){
   if(!conversation)return;
   conversation.elapsed=0;conversation.index++;
-  if(conversation.index>=conversation.script.length){conversation=null;npcBubble.classList.add('hidden');heroBubble.classList.add('hidden');}
+  if(conversation.index>=conversation.script.length){const completed=conversation;conversation=null;npcBubble.classList.add('hidden');heroBubble.classList.add('hidden');completed.onComplete?.();}
 }
 
 function updateConversation(dt){
   if(!conversation){npcBubble.classList.add('hidden');heroBubble.classList.add('hidden');return;}
   const {npc,script}=conversation,dx=npc.position.x-hero.position.x,dz=npc.position.z-hero.position.z;
   npc.rotation.y=Math.atan2(-dx,-dz);hero.rotation.y=Math.atan2(dx,dz);conversation.elapsed+=dt;
-  if(conversation.elapsed>2.7){advanceConversation();if(!conversation)return;}
+  if(conversation.elapsed>(conversation.lineDuration||2.7)){advanceConversation();if(!conversation)return;}
   const line=script[conversation.index],npcSpeaking=line.speaker==='npc',bubble=npcSpeaking?npcBubble:heroBubble;
   npcBubble.classList.toggle('hidden',!npcSpeaking);heroBubble.classList.toggle('hidden',npcSpeaking);
   bubble.textContent=line.text;bubble.dataset.speaker=npcSpeaking?npc.userData.displayName:'小森';
-  positionSpeechBubble(npcBubble,npc,npc.userData.following?1.55:2.25);positionSpeechBubble(heroBubble,hero,2.25);
+  const npcBubbleHeight=npc.userData.boss?Math.max(3.2,npc.userData.bossFactor*.82):npc.userData.following?1.55:2.25;
+  positionSpeechBubble(npcBubble,npc,npcBubbleHeight);positionSpeechBubble(heroBubble,hero,2.25);
 }
 
 const shopBubble=document.createElement('div');shopBubble.className='speech-bubble shop-bubble hidden';shopBubble.dataset.speaker='森林商店';
@@ -718,6 +807,16 @@ function setCoinBalance(value,pulse=false){
   coinBalance=Math.max(0,value);document.querySelector('#coinCount').textContent=coinBalance;if(pulse)pulseWallet();
 }
 
+function setPotionCount(value,pulse=false){
+  potionCount=Math.max(0,Math.floor(value));potionButton.textContent=`使用藥水(${potionCount})`;
+}
+
+function buyDoctorPotion(){
+  if(doctorPotionStock<=0)return showDoctorResult(`藥水暫時售罄了。下一瓶大約 ${Math.max(1,Math.ceil(doctorPotionRestockTimer))} 秒後調配完成。`);
+  if(coinBalance<DOCTOR_POTION_PRICE)return showDoctorResult(`一瓶藥水需要 ${DOCTOR_POTION_PRICE} 枚 coin，你現在還不夠。`);
+  setCoinBalance(coinBalance-DOCTOR_POTION_PRICE);setPotionCount(potionCount+1,true);doctorPotionStock--;if(doctorPotionStock<DOCTOR_POTION_MAX_STOCK&&doctorPotionRestockTimer<=0)doctorPotionRestockTimer=DOCTOR_POTION_RESTOCK_TIME;showDoctorResult(`這是你的回血藥水。現在還有 ${doctorPotionStock} 瓶存貨。`);
+}
+
 function doctorButton(label,handler,disabled=false){
   const button=document.createElement('button');button.textContent=label;button.disabled=disabled;button.addEventListener('click',handler);return button;
 }
@@ -733,6 +832,7 @@ function showDoctorMenu(){
   if(purchaseState)closePurchase();if(huntPrompt)closeHuntPrompt();conversation=null;npcBubble.classList.add('hidden');heroBubble.classList.add('hidden');moving=false;marker.visible=false;doctorState={mode:'menu'};
   doctorText.textContent='旅途中受傷了嗎？我可以照顧你的動物。';
   doctorActions.replaceChildren(
+    doctorButton(`回血藥水 $${DOCTOR_POTION_PRICE} · 存貨 ${doctorPotionStock}`,buyDoctorPotion),
     doctorButton('全部治療 $20',()=>{
       const companions=followers.filter(animal=>!animal.userData.dead),patients=companions.filter(animal=>animal.userData.hp<animal.userData.maxHp-.01);if(!companions.length)return showDoctorResult('你現在沒有隨行動物。');if(!patients.length)return showDoctorResult('大家都很健康，現在不需要治療。');
       if(coinBalance<20)return showDoctorResult('你的 coin 不足 20 枚。');
@@ -778,13 +878,42 @@ huntBubble.className='speech-bubble shop-bubble hunt-bubble hidden';huntBubble.d
 const battleBanner=document.createElement('div');battleBanner.className='battle-banner hidden';document.querySelector('#app').append(battleBanner);
 const bossHealth=document.createElement('div'),bossHealthName=document.createElement('span'),bossHealthFill=document.createElement('i');
 bossHealth.className='boss-health hidden';bossHealthName.textContent='地區首領';bossHealth.append(bossHealthName,bossHealthFill);document.querySelector('#app').append(bossHealth);
-const battleActionBubble=document.createElement('div'),battleActionText=document.createElement('div'),battleActionButtons=document.createElement('div'),cheerButton=document.createElement('button'),swapButton=document.createElement('button'),escapeButton=document.createElement('button');
-battleActionBubble.className='speech-bubble shop-bubble battle-action-bubble hidden';battleActionBubble.dataset.speaker='小森';battleActionButtons.className='shop-actions';cheerButton.textContent='加油';swapButton.textContent='換手';escapeButton.textContent='逃走';battleActionButtons.append(cheerButton,swapButton,escapeButton);battleActionBubble.append(battleActionText,battleActionButtons);document.querySelector('#app').append(battleActionBubble);
+const battleActionBubble=document.createElement('div'),battleActionText=document.createElement('div'),battleActionButtons=document.createElement('div'),cheerButton=document.createElement('button'),swapButton=document.createElement('button'),potionButton=document.createElement('button'),escapeButton=document.createElement('button'),closeActionButton=document.createElement('button');
+battleActionBubble.className='speech-bubble shop-bubble battle-action-bubble hidden';battleActionBubble.dataset.speaker='小森';battleActionButtons.className='shop-actions';cheerButton.textContent='加油';swapButton.textContent='換手';potionButton.textContent=`使用藥水(${potionCount})`;escapeButton.textContent='逃走';closeActionButton.textContent='不用了';battleActionButtons.append(cheerButton,swapButton,potionButton,escapeButton,closeActionButton);battleActionBubble.append(battleActionText,battleActionButtons);document.querySelector('#app').append(battleActionBubble);
 const cryBubbles=new Map(),dyingAnimals=[];
 
 function closeHuntPrompt(){
   if(huntPrompt?.target?.userData.motion)huntPrompt.target.userData.motion.wait=1.2;
   huntPrompt=null;huntBubble.classList.add('hidden');
+}
+
+const bossLegendStories={
+  'animal-deer':{past:'我曾帶著鹿群走過霧林最早的道路，那時天空還能從樹冠之間看見。',secret:'後來森林合上枝葉，把一座不該被找到的古城藏在根系下面。'},
+  'animal-fox':{past:'很久以前，我替迷路的旅人引路，也替森林藏起他們不願面對的記憶。',secret:'粉紅霧中的影子並非幻覺，而是被森林留下的另一種可能。'},
+  'animal-bunny':{past:'別因我的模樣小看我。我曾在第一聲地底鐘響起前，跑遍森林每一條舊路。',secret:'道路不是消失了；它們在沉睡，而且會在某個清晨同時醒來。'},
+  'animal-panda':{past:'我守著這片森林最古老的樹。它還是幼苗時，我就在這裡聽它做夢。',secret:'所有樹根都連著同一顆心，而那顆心最近開始不安地跳動。'},
+  'animal-hog':{past:'這些泥土曾是我的家園。我用獠牙翻開過人類刻意埋藏的石門。',secret:'門後沒有寶藏，只有一個會記住所有名字、卻沒有名字的存在。'},
+  'animal-monkey':{past:'我曾爬到森林最高的樹頂，從那裡看見霧外並不是天空。',secret:'我們以為自己困在森林裡，也許其實是森林在保護我們，不讓外面的東西看見。'},
+  'animal-tiger':{past:'我不是生來便是首領。上一位守護者把傷痕與責任交給我，自己走進了深綠色的霧。',secret:'每位首領都守著同一個誓言，而誓言真正防備的從來不是旅人。'},
+  'animal-parrot':{past:'我記得森林仍有人類王國時說過的每一句話，也記得他們最後一夜的呼喊。',secret:'散落各地的 coin 是他們留下的訊息；集齊的不是財富，而是一句未說完的警告。'}
+};
+
+function bossConversationFor(boss){
+  const story=bossLegendStories[boss.userData.species]||{past:'我在這片森林守候了很久，久得連樹木都忘記最初的季節。',secret:'霧林隱藏著一個足以改變所有旅人命運的真相。'};
+  return [
+    {speaker:'npc',text:story.past},
+    {speaker:'hero',text:'你一直守在這裡，是為了保護森林的秘密嗎？'},
+    {speaker:'npc',text:story.secret},
+    {speaker:'hero',text:'請告訴我完整的真相。'},
+    {speaker:'npc',text:'想知道真相，就先在戰鬥中擊敗我。但要記住，我遠比你沿途遇見的野獸強大。'},
+    {speaker:'npc',text:'帶著你的同伴作出選擇吧——前進，還是現在離開。'}
+  ];
+}
+
+function beginBossEncounter(boss){
+  startBossConversation(boss,()=>{
+    if(!boss.userData.dead&&!battle)openHuntPrompt(boss);
+  });
 }
 
 function openHuntPrompt(animal){
@@ -820,7 +949,7 @@ function selectBattleAllies(candidates){
   while(selected.length<count&&pool.length){
     const weights=pool.map(animal=>{
       const personality=animalPersonalityDefs[animal.userData.personality]||animalPersonalityDefs.steady,health=THREE.MathUtils.clamp(animal.userData.hp/animal.userData.maxHp,0,1);
-      return Math.max(.002,personality.willingness*Math.pow(health,2.35)*(1-(animal.userData.fatigue||0)*.4));
+      return Math.max(.002,personality.willingness*Math.pow(health,2.35)*(1-(animal.userData.fatigue||0)*.4)*animalAffinityEffect(animal).power);
     });
     const total=weights.reduce((sum,value)=>sum+value,0);let pick=Math.random()*total,index=0;
     for(;index<weights.length-1;index++){pick-=weights[index];if(pick<=0)break;}
@@ -831,16 +960,18 @@ function selectBattleAllies(candidates){
 
 function battleWillingness(animal){
   const personality=animalPersonalityDefs[animal.userData.personality]||animalPersonalityDefs.steady,health=THREE.MathUtils.clamp(animal.userData.hp/animal.userData.maxHp,0,1);
-  return personality.willingness*Math.pow(health,2.35)*(1-(animal.userData.fatigue||0)*.4);
+  return personality.willingness*Math.pow(health,2.35)*(1-(animal.userData.fatigue||0)*.4)*animalAffinityEffect(animal).power;
 }
 
 function createCombatState(index=0){
-  return {state:'standoff',cooldown:.8+Math.random()*1.6,time:0,duration:0,strafe:index%2?1:-1,wanderAngle:Math.random()*Math.PI*2,attackChain:0,target:null,targetLock:0,chargeX:0,chargeZ:1,rollX:0,rollZ:0,rollSide:1,rollFacingY:0,rollBaseY:0,rollLift:.65,hitX:0,hitZ:0,hitFacingY:0,hitBaseY:0,hitLift:.65,hitCritical:false,hasHit:false};
+  return {state:'standoff',cooldown:.8+Math.random()*1.6,time:0,duration:0,strafe:index%2?1:-1,wanderAngle:Math.random()*Math.PI*2,attackChain:0,target:null,targetLock:0,chargeX:0,chargeZ:1,rollX:0,rollZ:0,rollSide:1,rollFacingY:0,rollBaseY:0,rollLift:.65,hitX:0,hitZ:0,hitFacingY:0,hitBaseY:0,hitLift:.65,hitCritical:false,hasHit:false,particleCooldown:0,jumpTargetX:0,jumpTargetY:0,jumpTargetZ:0,jumpSpeed:0,jumpDuration:0};
 }
 
 function closeBattleAction(){
   battleActionState=null;battleActionBubble.classList.add('hidden');battleActionButtons.style.display='flex';
 }
+
+function showHeroActionButtons(...buttons){battleActionButtons.replaceChildren(...buttons);battleActionButtons.style.display='flex';}
 
 function battleReserves(){
   if(!battle)return [];
@@ -855,7 +986,28 @@ function safeFollowerRetreatSpot(index){
 
 function openBattleAction(){
   if(!battle||battle.ending)return;
-  battleActionState={mode:'menu'};moving=false;marker.visible=false;battleActionBubble.dataset.speaker='小森';battleActionText.textContent='現在想做甚麼？';battleActionButtons.style.display='flex';swapButton.style.display=battleReserves().length?'inline-block':'none';battleActionBubble.classList.remove('hidden');
+  battleActionState={mode:'menu',context:'battle'};moving=false;marker.visible=false;battleActionBubble.dataset.speaker=localDisplayName;battleActionText.textContent='現在想做甚麼？';showHeroActionButtons(cheerButton,...(battleReserves().length?[swapButton]:[]),potionButton,escapeButton,closeActionButton);battleActionBubble.classList.remove('hidden');
+}
+
+function openHeroAction(){
+  if(battle)return openBattleAction();if(purchaseState)closePurchase();if(doctorState)closeDoctor();if(huntPrompt)closeHuntPrompt();conversation=null;npcBubble.classList.add('hidden');heroBubble.classList.add('hidden');moving=false;marker.visible=false;battleActionState={mode:'menu',context:'field'};battleActionBubble.dataset.speaker=localDisplayName;battleActionText.textContent='想要做甚麼？';showHeroActionButtons(potionButton,closeActionButton);battleActionBubble.classList.remove('hidden');
+}
+
+function showPotionChoices(){
+  const context=battleActionState?.context||(battle?'battle':'field'),back=context==='battle'?openBattleAction:openHeroAction;battleActionState={mode:'potion',context};battleActionBubble.dataset.speaker=localDisplayName;
+  if(potionCount<=0){battleActionText.textContent='你現在沒有回血藥水，可以向森林醫生購買。';showHeroActionButtons(doctorButton('返回',back),closeActionButton);return;}
+  const availableAnimals=[...new Set([...followers,...(battle?.allies||[])])];
+  const candidates=availableAnimals.filter(animal=>!animal.userData.dead&&animal.userData.hp<animal.userData.maxHp-.01);
+  if(!candidates.length){battleActionText.textContent='隨行動物現在都沒有受傷。';showHeroActionButtons(doctorButton('返回',back),closeActionButton);return;}
+  battleActionText.textContent=`要給哪一隻動物使用？目前持有 ${potionCount} 瓶。`;showHeroActionButtons(...candidates.map(animal=>doctorButton(animal.userData.displayName,()=>usePotionOnAnimal(animal,context))),doctorButton('返回',back),closeActionButton);
+}
+
+function usePotionOnAnimal(animal,context){
+  const availableAnimals=new Set([...followers,...(battle?.allies||[])]);
+  if(potionCount<=0||!availableAnimals.has(animal)||animal.userData.dead||animal.userData.hp>=animal.userData.maxHp-.01)return showPotionChoices();
+  const recovered=Math.min(animal.userData.maxHp-animal.userData.hp,Math.max(1,Math.round(animal.userData.maxHp*.45)));
+  animal.userData.hp+=recovered;animal.userData.restingForRecovery=false;setPotionCount(potionCount-1);emitCombatParticles(animal.position,'heal');
+  const sounds=animalVoices[animal.userData.species]||['嗚嗚……'];emitAnimalSound(animal,`♡ ${sounds[1]||sounds[0]} ♡`,2.05);closeBattleAction();
 }
 
 function switchBattleAnimal(){
@@ -868,7 +1020,7 @@ function switchBattleAnimal(){
   outgoing.userData.exhausted=false;outgoing.userData.returningFromBattle=true;startFollowerTeleport(outgoing,retreat.x,retreat.z);
   cancelFollowerTeleport(incoming);incoming.position.copy(position);incoming.position.y=surfaceHeightAt(position.x,position.z,position.y+.2);incoming.scale.setScalar(incoming.userData.baseScale);incoming.userData.grounded=true;incoming.userData.verticalVelocity=0;incoming.userData.restingForRecovery=false;incoming.userData.exhausted=false;incoming.userData.isWalking=false;
   battle.allies[index]=incoming;battle.states.delete(outgoing);battle.states.set(incoming,createCombatState(index));battle.startingHp.delete(outgoing);battle.startingHp.set(incoming,incoming.userData.hp);
-  battle.states.forEach(state=>{state.target=null;state.targetLock=0;if(state.state==='aim'||state.state==='charge')state.state='standoff';});
+  battle.states.forEach(state=>{state.target=null;state.targetLock=0;if(['aim','charge','jumpCrouch','jumpLeap','jumpLand'].includes(state.state))state.state='standoff';});
   closeBattleAction();showBattleMessage(`${outgoing.userData.displayName}退下，${incoming.userData.displayName}接手戰鬥！`,2.2);
 }
 
@@ -888,7 +1040,9 @@ cheerButton.addEventListener('click',()=>{
   battleActionText.textContent=cheers[Math.floor(Math.random()*cheers.length)];battleActionButtons.style.display='none';battleActionState={mode:'message',timer:2.2};
 });
 swapButton.addEventListener('click',switchBattleAnimal);
+potionButton.addEventListener('click',showPotionChoices);
 escapeButton.addEventListener('click',()=>escapeBattle(true,true));
+closeActionButton.addEventListener('click',closeBattleAction);
 
 function startBattle(){
   const enemy=huntPrompt?.target;if(!enemy||enemy.userData.dead)return closeHuntPrompt();
@@ -950,9 +1104,9 @@ function chooseBattleAction(animal,state){
     state.state='exhausted';state.time=0;state.duration=1.55+Math.random()*1.15;animal.userData.exhausted=true;
     emitAnimalSound(animal,`${(animalVoices[animal.userData.species]||['嗚嗚……'])[0]}……`,2.1);return;
   }
-  const attackChance=personality.attackChance*(1-animal.userData.fatigue*.55),roll=Math.random();state.time=0;
+  const affinity=animalAffinityEffect(animal),attackChance=Math.min(.92,personality.attackChance*(1-animal.userData.fatigue*.55)*(1+(affinity.power-1)*.35)),roll=Math.random();state.time=0;
   if(roll<attackChance){
-    state.state='aim';state.duration=.24+Math.random()*.18;state.hasHit=false;state.attackChain++;animal.userData.fatigue=Math.min(1,animal.userData.fatigue+.2+state.attackChain*.035);
+    const jumpAttacker=animal.userData.species==='animal-bunny'||animal.userData.species==='animal-parrot';state.state=jumpAttacker?'jumpCrouch':'aim';state.duration=(jumpAttacker ? .34 : .24+Math.random()*.18)/affinity.speed;state.hasHit=false;state.attackChain++;animal.userData.fatigue=Math.min(1,animal.userData.fatigue+.2+state.attackChain*.035);
     tryTriggerCombatRoll(animal,state.target);return;
   }
   state.attackChain=0;
@@ -979,6 +1133,7 @@ function resetCombatRollPose(animal){
   const state=battle?.states.get(animal);
   if(state?.state==='roll'){animal.position.y=state.rollBaseY;animal.rotation.set(0,state.rollFacingY,0);}
   else if(state?.state==='hit'){animal.position.y=state.hitBaseY;animal.rotation.set(0,state.hitFacingY,0);}
+  else if(state&&['jumpCrouch','jumpLeap','jumpLand'].includes(state.state)){animal.rotation.x=0;animal.rotation.z=0;animal.scale.setScalar(animal.userData.baseScale);}
   else animal.rotation.z=0;
 }
 
@@ -992,7 +1147,8 @@ function setCombatHitPose(animal,state,progress){
 
 function damageAnimal(attacker,victim){
   if(victim.userData.dead)return;
-  const exposed=victim.userData.exhausted,critical=Math.random()<(exposed ? .22 : .12),multiplier=(exposed?1.65:1)*(critical?1.5:1),damage=Math.max(2,Math.round((attacker.userData.attack*(.85+Math.random()*.3)-victim.userData.defense*.45)*multiplier));
+  const attackerAffinity=animalAffinityEffect(attacker),victimAffinity=animalAffinityEffect(victim),exposed=victim.userData.exhausted,criticalChance=(exposed ? .22 : .12)+(attackerAffinity.power-1)*.12,critical=Math.random()<criticalChance,multiplier=(exposed?1.65:1)*(critical?1.5:1),damage=Math.max(2,Math.round((attacker.userData.attack*attackerAffinity.power*(.85+Math.random()*.3)-victim.userData.defense*victimAffinity.power*.45)*multiplier));
+  const impactDX=victim.position.x-attacker.position.x,impactDZ=victim.position.z-attacker.position.z,impactLength=Math.max(.001,Math.hypot(impactDX,impactDZ)),impactDirection={x:impactDX/impactLength,z:impactDZ/impactLength};emitCombatParticles(victim.position,'hit',impactDirection);if(critical)emitCombatParticles(victim.position,'critical',impactDirection);
   if(victim.userData.sharedEncounterId&&currentRoom&&multiplayerSocket?.readyState===WebSocket.OPEN){
     multiplayerSocket.send(JSON.stringify({type:'encounter_hit',id:victim.userData.sharedEncounterId,damage}));
     showBattleMessage(`${critical?'暴擊！':''}${attacker.userData.displayName} 衝撞命中${exposed?'疲勞破綻':''}，造成 ${damage} 傷害`,critical?1.7:1.15);startCombatHitReaction(attacker,victim,critical);return;
@@ -1052,38 +1208,54 @@ function updateBattle(dt){
   const enemyLocallyControlled=!enemy.userData.sharedEncounterId||enemy.userData.sharedControllerId===localPlayerId;
   const combatants=[...aliveAllies,...(enemyLocallyControlled?[enemy]:[])].filter(a=>!a.userData.dead);
   combatants.forEach((animal,index)=>{
-    const state=battle.states.get(animal);if(!state)return;
+    const state=battle.states.get(animal);if(!state)return;const affinityEffect=animalAffinityEffect(animal),combatSpeed=animal.userData.combatSpeed*affinityEffect.speed;
     state.targetLock=Math.max(0,state.targetLock-dt);
-    const attacking=state.state==='aim'||state.state==='charge',lockedTarget=state.target&&!state.target.userData.dead&&(attacking||state.targetLock>0)?state.target:null,opponent=lockedTarget||livingBattleTarget(animal);if(!opponent)return;
+    const attacking=['aim','charge','jumpCrouch','jumpLeap','jumpLand'].includes(state.state),lockedTarget=state.target&&!state.target.userData.dead&&(attacking||state.targetLock>0)?state.target:null,opponent=lockedTarget||livingBattleTarget(animal);if(!opponent)return;
     if(!lockedTarget){state.target=opponent;state.targetLock=.85+Math.random()*.7;}
     const dx=opponent.position.x-animal.position.x,dz=opponent.position.z-animal.position.z,dist=Math.max(.001,Math.hypot(dx,dz)),dirX=dx/dist,dirZ=dz/dist;
     let walking=false;state.time+=dt;
     if(state.state==='standoff'){
       animal.userData.fatigue=Math.max(0,animal.userData.fatigue-dt*.045);
-      state.cooldown-=dt;const desired=2.5+(animal===enemy ? .15 : index*.12);
-      if(dist>desired+.35)walking=moveCombatAnimalFacing(animal,dirX,dirZ,Math.min(animal.userData.combatSpeed*.35*dt,dist-desired));
-      else if(dist<desired-.35)walking=moveCombatAnimalFacing(animal,-dirX,-dirZ,animal.userData.combatSpeed*.25*dt);
+      state.cooldown-=dt*affinityEffect.speed;const desired=2.5+(animal===enemy ? .15 : index*.12);
+      if(dist>desired+.35)walking=moveCombatAnimalFacing(animal,dirX,dirZ,Math.min(combatSpeed*.35*dt,dist-desired));
+      else if(dist<desired-.35)walking=moveCombatAnimalFacing(animal,-dirX,-dirZ,combatSpeed*.25*dt);
       else walking=moveCombatAnimalFacing(animal,-dirZ*state.strafe,dirX*state.strafe,.34*dt);
       if(state.cooldown<=0){state.target=opponent;chooseBattleAction(animal,state);}
+    }else if(state.state==='jumpCrouch'){
+      turnCombatAnimal(animal,dirX,dirZ,.3);const progress=Math.min(state.time/state.duration,1),compression=Math.sin(progress*Math.PI*.5),base=animal.userData.baseScale;
+      animal.scale.set(base*(1+compression*.08),base*(1-compression*.28),base*(1+compression*.08));
+      if(state.time>=state.duration){
+        state.jumpTargetX=opponent.position.x;state.jumpTargetY=opponent.position.y;state.jumpTargetZ=opponent.position.z;const jumpDX=state.jumpTargetX-animal.position.x,jumpDZ=state.jumpTargetZ-animal.position.z,jumpDistance=Math.max(.001,Math.hypot(jumpDX,jumpDZ)),apex=THREE.MathUtils.clamp(1.6+jumpDistance*.25,2.1,5.6)+(animal.userData.species==='animal-parrot' ? .65 : 0),launchVelocity=Math.sqrt(36*apex),heightDelta=state.jumpTargetY-animal.position.y,flightTime=(launchVelocity+Math.sqrt(Math.max(.01,launchVelocity*launchVelocity-36*heightDelta)))/18;
+        state.chargeX=jumpDX/jumpDistance;state.chargeZ=jumpDZ/jumpDistance;state.jumpSpeed=jumpDistance/Math.max(.35,flightTime);state.jumpDuration=flightTime;state.state='jumpLeap';state.time=0;state.hasHit=false;animal.scale.setScalar(base);animal.rotation.y=Math.atan2(state.chargeX,state.chargeZ);animal.userData.verticalVelocity=launchVelocity;animal.userData.grounded=false;animal.userData.jumpCooldown=1;emitCombatParticles(animal.position,'takeoff');
+      }
+    }else if(state.state==='jumpLeap'){
+      const descending=animal.userData.verticalVelocity<0,remaining=Math.hypot(state.jumpTargetX-animal.position.x,state.jumpTargetZ-animal.position.z),step=Math.min(remaining,state.jumpSpeed*dt);walking=remaining>.025&&moveCombatAnimal(animal,state.chargeX,state.chargeZ,step,animal.position.y);animal.rotation.x=descending ? .3 : -.16;
+      const impactDistance=(animal.userData.collisionRadius||.62)+(opponent.userData.collisionRadius||.62)+.16,feetNearTarget=animal.position.y-opponent.position.y<=1.05,nearLockedLanding=remaining<=impactDistance+.35;
+      if(!state.hasHit&&descending&&feetNearTarget&&nearLockedLanding&&dist<=impactDistance){state.hasHit=true;damageAnimal(animal,opponent);}
+      if(animal.userData.grounded&&state.time>.12){state.state='jumpLand';state.time=0;animal.rotation.x=0;emitCombatParticles(animal.position,'land');}
+      else if(state.time>state.jumpDuration+.55){state.state='jumpLand';state.time=0;animal.rotation.x=0;emitCombatParticles(animal.position,'land');}
+    }else if(state.state==='jumpLand'){
+      const progress=Math.min(state.time/.24,1),squash=Math.sin(progress*Math.PI),base=animal.userData.baseScale;animal.scale.set(base*(1+squash*.1),base*(1-squash*.2),base*(1+squash*.1));
+      if(progress>=1){animal.scale.setScalar(base);state.state='retreat';state.time=0;}
     }else if(state.state==='aim'){
       turnCombatAnimal(animal,dirX,dirZ,.32);
       if(state.time>=state.duration){state.chargeX=dirX;state.chargeZ=dirZ;animal.rotation.y=Math.atan2(dirX,dirZ);state.state='charge';state.time=0;state.hasHit=false;}
     }else if(state.state==='charge'){
-      walking=moveCombatAnimal(animal,state.chargeX,state.chargeZ,animal.userData.combatSpeed*dt);maybeStartCombatJump(animal,state.chargeX,state.chargeZ);
+      walking=moveCombatAnimal(animal,state.chargeX,state.chargeZ,combatSpeed*dt);maybeStartCombatJump(animal,state.chargeX,state.chargeZ);
       const impactDistance=(animal.userData.collisionRadius||.62)+(opponent.userData.collisionRadius||.62)+.04;
       if(!state.hasHit&&dist<=impactDistance){state.hasHit=true;damageAnimal(animal,opponent);state.state='retreat';state.time=0;}
       else if(state.time>1.25){state.state='retreat';state.time=0;}
     }else if(state.state==='retreat'){
-      walking=moveCombatAnimalFacing(animal,-dirX,-dirZ,animal.userData.combatSpeed*.55*dt);
+      walking=moveCombatAnimalFacing(animal,-dirX,-dirZ,combatSpeed*.55*dt);
       if(state.time>.48){state.state='standoff';state.cooldown=.35+Math.random()*.8;state.time=0;state.strafe*=-1;}
     }else if(state.state==='evade'){
       animal.userData.fatigue=Math.max(0,animal.userData.fatigue-dt*.09);
       const evadeX=-dirX*.72-dirZ*state.strafe*.7,evadeZ=-dirZ*.72+dirX*state.strafe*.7,length=Math.hypot(evadeX,evadeZ);
-      walking=moveCombatAnimalFacing(animal,evadeX/length,evadeZ/length,animal.userData.combatSpeed*.7*dt);
+      walking=moveCombatAnimalFacing(animal,evadeX/length,evadeZ/length,combatSpeed*.7*dt);
       if(state.time>=state.duration){state.state='standoff';state.cooldown=.45+Math.random()*1.1;state.time=0;}
     }else if(state.state==='wander'){
       animal.userData.fatigue=Math.max(0,animal.userData.fatigue-dt*.075);
-      const wanderX=Math.sin(state.wanderAngle),wanderZ=Math.cos(state.wanderAngle);walking=moveCombatAnimalFacing(animal,wanderX,wanderZ,animal.userData.combatSpeed*.38*dt);
+      const wanderX=Math.sin(state.wanderAngle),wanderZ=Math.cos(state.wanderAngle);walking=moveCombatAnimalFacing(animal,wanderX,wanderZ,combatSpeed*.38*dt);
       if(state.time>=state.duration){state.state='standoff';state.cooldown=.55+Math.random()*1.25;state.time=0;state.strafe*=-1;}
     }else if(state.state==='hit'){
       const progress=Math.min(state.time/state.duration,1),pushSpeed=(state.hitCritical?2.8:2.2)*(1-progress);
@@ -1091,7 +1263,7 @@ function updateBattle(dt){
       if(progress>=1){animal.position.y=state.hitBaseY;animal.rotation.set(0,state.hitFacingY,0);state.state='standoff';state.cooldown=.55+Math.random()*.8;state.time=0;}
     }else if(state.state==='roll'){
       animal.userData.fatigue=Math.max(0,animal.userData.fatigue-dt*.035);const progress=Math.min(state.time/state.duration,1);
-      walking=moveCombatAnimal(animal,state.rollX,state.rollZ,animal.userData.combatSpeed*1.15*dt,state.rollBaseY);
+      walking=moveCombatAnimal(animal,state.rollX,state.rollZ,combatSpeed*1.15*dt,state.rollBaseY);
       if(walking)setCombatRollPose(animal,state,progress);
       if(!walking||progress>=1){animal.position.y=state.rollBaseY;animal.rotation.set(0,state.rollFacingY,0);state.state='standoff';state.cooldown=.35+Math.random()*.75;state.time=0;}
     }else{
@@ -1099,6 +1271,7 @@ function updateBattle(dt){
       if(state.time>=state.duration){animal.userData.exhausted=false;state.attackChain=0;state.state='standoff';state.cooldown=.8+Math.random()*1.2;state.time=0;}
     }
     if(state.state!=='roll'&&state.state!=='hit'){animal.userData.jumpCooldown=Math.max(0,(animal.userData.jumpCooldown||0)-dt);updateFollowerVertical(animal,dt);}
+    if(walking&&animal.userData.grounded){state.particleCooldown-=dt;if(state.particleCooldown<=0){emitCombatParticles(animal.position,'run');state.particleCooldown=.1+Math.random()*.06;}}else state.particleCooldown=Math.min(state.particleCooldown,.04);
     animal.userData.phase=(animal.userData.phase||0)+dt*(walking?11:3);animal.userData.walkWeight=THREE.MathUtils.damp(animal.userData.walkWeight||0,walking?1:0,10,dt);animateAnimalFeet(animal,animal.userData.phase,animal.userData.walkWeight);
   });
 }
@@ -1273,7 +1446,8 @@ function updateShop(dt){
   shopBubble.classList.remove('hidden');positionSpeechBubble(shopBubble,purchaseState.anchor,2.05);
 }
 
-function updateDoctor(){
+function updateDoctor(dt){
+  if(doctorPotionStock<DOCTOR_POTION_MAX_STOCK){doctorPotionRestockTimer-=dt;if(doctorPotionRestockTimer<=0){doctorPotionStock++;doctorPotionRestockTimer=doctorPotionStock<DOCTOR_POTION_MAX_STOCK?DOCTOR_POTION_RESTOCK_TIME:0;if(doctorState?.mode==='menu')showDoctorMenu();}}
   if(!doctorState||!doctor)return;
   const dx=hero.position.x-doctor.position.x,dz=hero.position.z-doctor.position.z;doctor.rotation.y=Math.atan2(dx,dz);
   if(Math.hypot(dx,dz)>5.4){closeDoctor();return;}
@@ -1345,8 +1519,9 @@ function returnToOrigin(){
 function setTarget(e){
   if(!started||e.button!==0)return;
   if(conversation){advanceConversation();return;}
-  if(battle){setPointerRay(e);if(!battle.ending&&clickedHero()){openBattleAction();return;}if(battleActionState?.mode==='menu')return;moveTargetFromPointer(e);return;}
-  setPointerRay(e);const shopSlot=clickedShopSlot();
+  if(battle){setPointerRay(e);if(!battleActionState&&!battle.ending&&clickedHero()){openBattleAction();return;}if(battleActionState)return;moveTargetFromPointer(e);return;}
+  if(battleActionState)return;
+  setPointerRay(e);if(clickedHero()){openHeroAction();return;}const shopSlot=clickedShopSlot();
   if(shopSlot&&shopSlot.animal.position.distanceTo(hero.position)<=4){openPurchase(shopSlot);return;}
   const follower=clickedFollower();
   if(follower&&follower.position.distanceTo(hero.position)<=3.4){startConversation(follower,animalConversationsFor(follower));return;}
@@ -1355,7 +1530,7 @@ function setTarget(e){
   const wild=clickedWildAnimal();
   const wildInteractionDistance=wild?.userData.boss?(wild.userData.collisionRadius||3)+5:4.8;
   if(wild&&wild.position.distanceTo(hero.position)<=wildInteractionDistance){
-    if(followers.some(animal=>!animal.userData.dead))openHuntPrompt(wild);else showBattleMessage('先從商人那裡帶一隻動物同行，才能進行狩獵。',2.8);
+    if(followers.some(animal=>!animal.userData.dead)){if(wild.userData.boss)beginBossEncounter(wild);else openHuntPrompt(wild);}
     return;
   }
   if(huntPrompt)closeHuntPrompt();
@@ -1366,7 +1541,7 @@ canvas.addEventListener('pointerdown',setTarget);
 canvas.addEventListener('contextmenu',e=>{
   e.preventDefault();if(!started)return;
   if(conversation){advanceConversation();return;}
-  if(huntPrompt||battleActionState?.mode==='menu')return;
+  if(huntPrompt||battleActionState)return;
   if(grounded){verticalVelocity=7.8;grounded=false;}
 });
 document.querySelector('#beginBtn').addEventListener('click',startGame);
@@ -1391,7 +1566,7 @@ const rainGeometry=new THREE.BufferGeometry();rainGeometry.setAttribute('positio
 const rainMaterial=new THREE.LineBasicMaterial({color:0xb9d2d3,transparent:true,opacity:0,depthWrite:false});
 const rainField=new THREE.LineSegments(rainGeometry,rainMaterial);rainField.frustumCulled=false;scene.add(rainField);
 
-const nightSky=new THREE.Color(0x211440),daySky=new THREE.Color(0x24563a),twilightSky=new THREE.Color(0x8b6250),overcastDay=new THREE.Color(0x536862),overcastNight=new THREE.Color(0x1a1535),mistTint=new THREE.Color(0x204832),environmentColor=new THREE.Color(),weatherTint=new THREE.Color();
+const nightSky=new THREE.Color(0x211440),daySky=new THREE.Color(0x24563a),twilightSky=new THREE.Color(0x8b6250),overcastDay=new THREE.Color(0x536862),overcastNight=new THREE.Color(0x1a1535),mistTint=new THREE.Color(0x9a5d78),environmentColor=new THREE.Color(),weatherTint=new THREE.Color();
 const statusText=document.querySelector('.status span'),statusDot=document.querySelector('.status i');
 
 function weatherAt(x,z){
@@ -1402,9 +1577,9 @@ function weatherAt(x,z){
 function updateEnvironment(dt,t){
   const localWeather=weatherAt(hero.position.x,hero.position.z),target=weatherProfiles[localWeather.name];
   if(weatherState.key!==localWeather.key){weatherState.key=localWeather.key;weatherState.name=localWeather.name;}
-  weatherState.sun=THREE.MathUtils.damp(weatherState.sun,target.sun,.72,dt);weatherState.fog=THREE.MathUtils.damp(weatherState.fog,target.fog,.72,dt);weatherState.rain=THREE.MathUtils.damp(weatherState.rain,target.rain,.9,dt);weatherState.cloud=THREE.MathUtils.damp(weatherState.cloud,target.cloud,.72,dt);
-  const phase=(.3+t/DAY_LENGTH)%1,solar=-Math.cos(phase*Math.PI*2),daylight=THREE.MathUtils.smoothstep(solar,-.18,.28),dawnDistance=Math.min(Math.abs(phase-.25),Math.abs(phase-.75)),twilight=THREE.MathUtils.clamp(1-dawnDistance/.085,0,1)*(1-weatherState.cloud*.45);
-  environmentColor.copy(nightSky).lerp(daySky,daylight).lerp(twilightSky,twilight*.38);weatherTint.copy(overcastNight).lerp(overcastDay,daylight);environmentColor.lerp(weatherTint,weatherState.cloud*.55);if(weatherState.name==='mist')environmentColor.lerp(mistTint,.42+daylight*.22);
+  weatherState.sun=THREE.MathUtils.damp(weatherState.sun,target.sun,.72,dt);weatherState.fog=THREE.MathUtils.damp(weatherState.fog,target.fog,.72,dt);weatherState.rain=THREE.MathUtils.damp(weatherState.rain,target.rain,.9,dt);weatherState.cloud=THREE.MathUtils.damp(weatherState.cloud,target.cloud,.72,dt);weatherState.mist=THREE.MathUtils.damp(weatherState.mist,target.mist,.48,dt);
+  const phase=(.3+t/DAY_LENGTH)%1,solar=-Math.cos(phase*Math.PI*2),daylight=THREE.MathUtils.smoothstep(solar,-.18,.28),dawnDistance=Math.min(Math.abs(phase-.25),Math.abs(phase-.75)),twilight=THREE.MathUtils.clamp(1-dawnDistance/.085,0,1)*(1-weatherState.cloud*.45);worldCycleState.phase=phase;worldCycleState.time=timeAffinityAt(phase);
+  environmentColor.copy(nightSky).lerp(daySky,daylight).lerp(twilightSky,twilight*.38);weatherTint.copy(overcastNight).lerp(overcastDay,daylight);environmentColor.lerp(weatherTint,weatherState.cloud*.55);environmentColor.lerp(mistTint,weatherState.mist*(.42+daylight*.22));
   scene.background.copy(environmentColor);scene.fog.color.copy(environmentColor);scene.fog.density=weatherState.fog*(1.12-daylight*.12);renderer.toneMappingExposure=.76+daylight*.31-weatherState.cloud*.045;
   const orbit=phase*Math.PI*2;sun.position.set(hero.position.x+Math.cos(orbit)*34,hero.position.y+18+Math.max(0,solar)*28,hero.position.z+Math.sin(orbit)*26);sun.target.position.set(hero.position.x,hero.position.y,hero.position.z);sun.target.updateMatrixWorld();sun.intensity=(.06+2.14*daylight)*weatherState.sun;sun.color.set(twilight>.15?0xffc58f:0xffedba);
   hemisphereLight.intensity=.42+daylight*(1.16-weatherState.cloud*.22);hemisphereLight.color.set(daylight>.3?0xb7d6aa:0x9789c4);hemisphereLight.groundColor.set(daylight>.3?0x182015:0x171026);
@@ -1418,7 +1593,7 @@ function updateEnvironment(dt,t){
   rainField.position.set(hero.position.x,hero.position.y,hero.position.z);rainMaterial.opacity=weatherState.rain*.52;
   const rainArray=rainGeometry.attributes.position.array;
   for(let i=0;i<rainDropCount;i++){const k=i*6,fall=rainSpeeds[i]*dt;rainArray[k+1]-=fall;rainArray[k+4]-=fall;if(rainArray[k+1]<0){const y=15+Math.random()*4;rainArray[k+1]=y;rainArray[k+4]=y-.65;}}rainGeometry.attributes.position.needsUpdate=true;
-  const period=phase<.2||phase>=.86?'深夜':phase<.32?'清晨':phase<.46?'上午':phase<.63?'午後':phase<.76?'黃昏':'入夜';statusText.textContent=`${period} · ${weatherProfiles[weatherState.name].label}`;statusDot.style.background=weatherState.name==='rain'?'#7fb2c3':weatherState.name==='mist'?'#b8c2b5':weatherState.name==='cloudy'?'#a7aca0':'#d1d86b';statusDot.style.boxShadow=`0 0 12px ${statusDot.style.background}`;
+  const period=phase<.2||phase>=.86?'深夜':phase<.32?'清晨':phase<.46?'上午':phase<.63?'午後':phase<.76?'黃昏':'入夜';statusText.textContent=`${period} · ${weatherProfiles[weatherState.name].label}`;statusDot.style.background=weatherState.name==='rain'?'#7fb2c3':weatherState.name==='mist'?'#e59ab8':weatherState.name==='cloudy'?'#a7aca0':'#d1d86b';statusDot.style.boxShadow=`0 0 12px ${statusDot.style.background}`;
 }
 
 const wallet=document.querySelector('.wallet');
@@ -1476,7 +1651,7 @@ function updateAnimalOverlays(dt){
     let timer=Number(bubble.dataset.timer||0);if(timer>0){timer-=dt;bubble.dataset.timer=timer;positionOverlay(bubble,animal,1.75);if(timer<=0)bubble.classList.add('hidden');}else bubble.classList.add('hidden');
   });
   if(huntPrompt){huntBubble.classList.remove('hidden');positionSpeechBubble(huntBubble,huntPrompt.target,huntPrompt.target.userData.boss?Math.max(3.2,huntPrompt.target.userData.bossFactor*.82):1.65);}
-  if(battleActionState?.mode==='menu'&&(!battle||battle.ending))closeBattleAction();
+  if(battleActionState?.context==='battle'&&(!battle||battle.ending))closeBattleAction();
   if(battleActionState){battleActionBubble.classList.remove('hidden');positionSpeechBubble(battleActionBubble,hero,2.25);if(battleActionState.mode==='message'){battleActionState.timer-=dt;if(battleActionState.timer<=0)closeBattleAction();}}
   else battleActionBubble.classList.add('hidden');
   const activeBoss=battle?.enemy?.userData.boss&&!battle.enemy.userData.dead?battle.enemy:null;
@@ -1575,9 +1750,9 @@ function animate(){
   if(heroModel) heroModel.position.y=Math.abs(Math.sin(walkPhase))*walkWeight*.055;
   animateWalkRig(walkPhase,walkWeight);
   marker.scale.setScalar(1+Math.sin(t*5)*.08); ring.material.opacity=.55+Math.sin(t*5)*.25;
-  updateAnimals(dt);updateNpcs(dt);resolveRoamingEntitySeparation();updateFollowers(dt);updateBattle(dt);updateSharedEncounters(dt);updateDeathsAndRespawns(dt);updateShop(dt);updateDoctor();updateCoins(dt,t);
+  updateAnimals(dt);updateNpcs(dt);resolveRoamingEntitySeparation();updateFollowers(dt);updateBattle(dt);updateCombatParticles(dt);updateSharedEncounters(dt);updateDeathsAndRespawns(dt);updateShop(dt);updateDoctor(dt);updateCoins(dt,t);
   arrangeTiles();updateJump(dt);resolvePlatformSideOverlap();
-  updateEnvironment(dt,t);
+  updateEnvironment(dt,t+worldTimeOffset);
   updateRemotePlayers(dt);sendPlayerState(t);
   const shadowY=surfaceHeightAt(hero.position.x,hero.position.z,hero.position.y+.05);
   shadow.position.set(hero.position.x,shadowY+.015,hero.position.z);
@@ -1585,6 +1760,7 @@ function animate(){
   recycleDistantAnimals();
   const desired=new THREE.Vector3(hero.position.x+12,hero.position.y+11,hero.position.z+16);camera.position.lerp(desired,1-Math.pow(.001,dt));camera.lookAt(hero.position.x,hero.position.y+1.8,hero.position.z);
   updateConversation(dt);updateAnimalOverlays(dt);
+  updateOnlinePlayerCard(false,t);
   updateBossTracker();
   document.querySelector('#coords').textContent=`N ${String(Math.abs(Math.round(hero.position.z))).padStart(2,'0')} · E ${String(Math.abs(Math.round(hero.position.x))).padStart(2,'0')}`;
   renderer.render(scene,camera);
@@ -1597,7 +1773,7 @@ async function init(){
   const heroReady=loadObj('characters','character-female-b').then(heroObj=>{
     const model=prepModel(heroObj,2.25);model.rotation.y=0;buildWalkRig(model);hero.add(model);heroModel=model;
   }).catch(err=>console.error('Hero model loading error:',err));
-  loadObj('characters','character-female-a').then(obj=>{
+  loadObj('characters','character-female-f').then(obj=>{
     remoteCharacterTemplate=obj;[...pendingRemotePlayers.values()].forEach(addRemotePlayer);
   }).catch(err=>console.error('Remote player model loading error:',err));
   const animalLoads=animalData.map((data,i)=>loadObj('animals',data[0]).then(obj=>{
@@ -1616,7 +1792,7 @@ async function init(){
   const merchantReady=loadObj('characters','character-male-f').then(obj=>{
     merchant=new THREE.Group();const model=prepModel(obj,2.25);model.rotation.y=0;merchant.add(model);merchant.position.set(-8,0,1);merchant.rotation.y=0;merchant.userData.displayName='森林商人';merchant.userData.isNpc=true;scene.add(merchant);
   }).catch(err=>console.error('Merchant loading error:',err));
-  const doctorReady=loadObj('characters','character-female-d').then(obj=>{
+  const doctorReady=loadObj('characters','character-male-e').then(obj=>{
     doctor=new THREE.Group();const model=prepModel(obj,2.25);model.rotation.y=0;doctor.add(model);doctor.userData.displayName='森林醫生';doctor.userData.isNpc=true;doctor.userData.collisionRadius=.68;
     let x=8,z=1;for(let attempt=0;attempt<12&&!entitySpotIsFree(x,z,.68,doctor);attempt++){const angle=attempt*.8;x=7+Math.cos(angle)*(2+attempt*.25);z=1+Math.sin(angle)*(2+attempt*.25);}doctor.position.set(x,0,z);doctor.rotation.y=0;scene.add(doctor);
   }).catch(err=>console.error('Doctor loading error:',err));

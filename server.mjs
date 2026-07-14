@@ -61,10 +61,10 @@ wss.on('connection',socket=>{
       let room=rooms.get(code);
       if(message.create&&room)return send(socket,{type:'error',message:'這個房間代碼已被使用，請再建立一次。'});
       if(!message.create&&!room)return send(socket,{type:'error',message:'找不到這個房間，請檢查代碼。'});
-      if(!room){room=new Map();room.bosses=new Map();room.encounters=new Map();rooms.set(code,room);}
+      if(!room){const suppliedTime=Number(message.worldTime),requestedTime=Number.isFinite(suppliedTime)?Math.max(0,Math.min(suppliedTime,8640000)):0;room=new Map();room.bosses=new Map();room.encounters=new Map();room.startedAt=Date.now()-requestedTime*1000;rooms.set(code,room);}
       if(room.size>=4)return send(socket,{type:'error',message:'房間已滿。'});
       client.room=code;client.name=cleanText(message.name)||'旅人';room.set(client.id,client);
-      send(socket,{type:'welcome',id:client.id,room:code,players:[...room.values()].filter(p=>p!==client).map(publicPlayer),world:{bosses:Object.fromEntries(room.bosses),encounters:[...room.encounters.values()]}});
+      send(socket,{type:'welcome',id:client.id,room:code,players:[...room.values()].filter(p=>p!==client).map(publicPlayer),world:{timeElapsed:(Date.now()-room.startedAt)/1000,bosses:Object.fromEntries(room.bosses),encounters:[...room.encounters.values()]}});
       broadcast(room,{type:'player_joined',player:publicPlayer(client)},socket);
       return;
     }

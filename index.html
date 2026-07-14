@@ -18,12 +18,10 @@
         <div class="status"><i></i><span>森林正在甦醒</span></div>
       </header>
 
-      <aside class="hero-card">
-        <p class="eyebrow">TRAVELLER 001</p>
-        <div class="portrait" aria-hidden="true"><span>主</span></div>
-        <div>
-          <h2>小森</h2>
-          <p>森林漫遊者 · 主人公</p>
+      <aside class="hero-card" aria-label="在線玩家">
+        <p class="eyebrow">ONLINE TRAVELLERS</p>
+        <div class="online-player-list" id="onlinePlayerList">
+          <div class="online-player local"><span>主</span><div><b>小森</b><small>你 · 本地漫遊</small></div></div>
         </div>
       </aside>
 
@@ -47,8 +45,8 @@
         <span><b>左鍵移動 · 右鍵跳躍</b><small>CLICK TO MOVE · RIGHT CLICK TO JUMP</small></span>
       </div>
 
-      <div class="coordinates"><span>霧林區域</span><b id="coords">N 00 · E 00</b><em id="bossTracker">正在尋找首領蹤跡…</em><button id="returnBtn" type="button">返回</button></div>
-      <div class="wallet"><span>COINS</span><b id="coinCount">0</b></div>
+      <div class="coordinates"><span>霧林區域</span><b id="coords">N 00 · E 00</b><em id="bossTracker">正在尋找首領蹤跡…</em><button id="returnBtn" type="button">返回重生點</button></div>
+      <div class="wallet"><img src="/images/coin.svg" alt="Coin"><b id="coinCount">0</b></div>
       <div class="room-hud hidden" id="roomHud"><span>CO-OP</span><b id="roomLabel">ROOM ------</b><small id="playerCount">1 / 4 PLAYERS</small><button id="leaveRoomBtn" type="button">離開</button></div>
       <div class="loader" id="loader"><span></span><p>正在喚醒森林…</p></div>
     </div>
