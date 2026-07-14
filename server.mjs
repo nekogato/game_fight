@@ -138,7 +138,7 @@ wss.on('connection',socket=>{
     if(message.type==='encounter_start'&&client.room){
       const room=rooms.get(client.room),source=message.encounter||{},id=cleanText(source.id,48),species=cleanText(source.species,24),number=value=>Number.isFinite(Number(value))?Number(value):0;if(!id||!species)return;
       if(!allowedSpecies.has(species)||!allowRate(client,'encounter_start',6,10000))return;
-      let encounter=room.encounters.get(id);if(!encounter){const maxHp=Math.max(10,Math.min(2000,Math.round(number(source.maxHp)||40)));encounter={id,species,x:finiteNumber(source.x,-100000,100000,0),y:finiteNumber(source.y,-10,200,0),z:finiteNumber(source.z,-100000,100000,0),rotation:0,hp:maxHp,maxHp,dead:false,controllerId:client.id};room.encounters.set(id,encounter);room.lastActive=Date.now();schedulePersist();}
+      let encounter=room.encounters.get(id);if(!encounter){const level=Math.max(1,Math.min(100,Math.floor(number(source.level)||1))),maxHp=Math.max(10,Math.min(2000,Math.round(number(source.maxHp)||40)));encounter={id,species,level,x:finiteNumber(source.x,-100000,100000,0),y:finiteNumber(source.y,-10,200,0),z:finiteNumber(source.z,-100000,100000,0),rotation:0,hp:maxHp,maxHp,dead:false,controllerId:client.id};room.encounters.set(id,encounter);room.lastActive=Date.now();schedulePersist();}
       broadcast(room,{type:'encounter_state',encounter});return;
     }
     if(message.type==='encounter_move'&&client.room){

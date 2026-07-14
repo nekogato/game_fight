@@ -65,6 +65,11 @@ function updateCombatParticles(dt){
   for(let i=combatParticles.length-1;i>=0;i--){const particle=combatParticles[i];particle.life-=dt;if(particle.life<=0){combatParticleGroup.remove(particle.mesh);combatParticles.splice(i,1);continue;}particle.vy-=particle.gravity*dt;particle.mesh.position.x+=particle.vx*dt;particle.mesh.position.y+=particle.vy*dt;particle.mesh.position.z+=particle.vz*dt;particle.mesh.rotation.y+=particle.spin*dt;particle.mesh.scale.multiplyScalar(Math.max(.82,1-dt*3.6));}
 }
 const TILE = 32, GRID = 5;
+const ORIGIN_LAYOUT={
+  tent:{x:0,z:-7},
+  merchant:{x:-5.5,z:0},
+  doctor:{x:5.5,z:0}
+};
 const DAY_LENGTH=240,WEATHER_REGION_SIZE=TILE*3;
 const weatherProfiles={
   clear:{label:'晴朗',sun:1,fog:.017,rain:0,cloud:.02,mist:0},
@@ -129,11 +134,18 @@ function populate(tile,tx,tz){
     }
     return null;
   };
-  if(tx===0&&tz===0){reserve(-8,1,4.2);reserve(7,-4.5,3.8);}
+  if(tx===0&&tz===0){
+    reserve(ORIGIN_LAYOUT.tent.x,ORIGIN_LAYOUT.tent.z,4.2);
+    reserve(ORIGIN_LAYOUT.merchant.x,ORIGIN_LAYOUT.merchant.z,4.2);
+    reserve(ORIGIN_LAYOUT.doctor.x,ORIGIN_LAYOUT.doctor.z,2.4);
+    reserve(0,0,2.2);
+  }
 
   platformDefs.forEach((def,i)=>{
     let spot;
-    if(tx===0&&tz===0)spot=[[4.5,1.5],[-5,-4],[2,-7]][i];
+    // Keep the tent, hero, merchant and doctor area clear. The origin blocks
+    // remain available around the outer edge instead of blocking the camp.
+    if(tx===0&&tz===0)spot=[[10,7],[-11,-10],[11,-11]][i];
     else spot=findSpot(Math.max(def.halfX,def.halfZ),TILE-8,false);
     if(!spot)return;const [x,z]=spot,rotation=i===1&&random()>.5?Math.PI/2:0;
     reserve(x,z,Math.max(def.halfX,def.halfZ));addGrassBlock(tile,props,def,x,z,0,rotation);
@@ -322,8 +334,8 @@ function cloneModelUnique(source){const clone=source.clone(true);clone.traverse(
 
 function loadOriginTent(){
   return loadObj('tent','tent').then(obj=>{
-    const tent=prepModel(obj,7);tent.traverse(object=>{if(!object.isMesh)return;const materials=Array.isArray(object.material)?object.material:[object.material];materials.filter(Boolean).forEach(material=>{material.transparent=false;material.opacity=1;material.alphaTest=0;material.depthWrite=true;material.depthTest=true;material.side=THREE.DoubleSide;material.needsUpdate=true;});});tent.position.set(7,0,-4.5);tent.rotation.y=0;tent.userData.blocking=true;scene.add(tent);
-    fixedObstacleColliders.push({type:'box',x:7,z:-4.5,halfX:3.05,halfZ:2.35,rotation:0,top:4});
+    const {x,z}=ORIGIN_LAYOUT.tent,tent=prepModel(obj,7);tent.traverse(object=>{if(!object.isMesh)return;const materials=Array.isArray(object.material)?object.material:[object.material];materials.filter(Boolean).forEach(material=>{material.transparent=false;material.opacity=1;material.alphaTest=0;material.depthWrite=true;material.depthTest=true;material.side=THREE.DoubleSide;material.needsUpdate=true;});});tent.position.set(x,0,z);tent.rotation.y=0;tent.userData.blocking=true;scene.add(tent);
+    fixedObstacleColliders.push({type:'box',x,z,halfX:3.05,halfZ:2.35,rotation:0,top:4});
     rebuildWorldColliders(nearbyBossArenas());relocateEmbeddedEntities();
     return tent;
   }).catch(error=>console.error('Tent model loading error:',error));
@@ -435,7 +447,7 @@ function ensureSharedEncounter(data){
     }
     animal.userData.sharedEncounterId=data.id;animal.position.set(data.x,data.y||0,data.z);resetAnimalMotion(animal);const label=createPlayerNameLabel('共同目標');label.position.y=1.55;label.scale.set(2.25,.56,1);animal.add(label);
   }
-  animal.userData.maxHp=data.maxHp;animal.userData.hp=Math.min(animal.userData.hp,data.hp);animal.userData.sharedControllerId=data.controllerId||animal.userData.sharedControllerId;animal.userData.sharedTargetPosition??=animal.position.clone();animal.userData.sharedTargetPosition.set(data.x,data.y||0,data.z);animal.userData.sharedTargetRotation=data.rotation||0;pendingSharedEncounters.delete(data.id);
+  const sharedLevel=THREE.MathUtils.clamp(Math.floor(Number(data.level)||1),1,100),base=animalBaseStats[animal.userData.species]||{hp:45,attack:10,defense:4,speed:6.5};animal.userData.level=sharedLevel;animal.userData.xp=0;animal.userData.maxHp=data.maxHp;animal.userData.hp=Math.min(animal.userData.hp,data.hp);animal.userData.attack=base.attack+(sharedLevel-1)*2;animal.userData.defense=base.defense+(sharedLevel-1);animal.userData.combatSpeed=base.speed+(sharedLevel-1)*.15;animal.userData.sharedControllerId=data.controllerId||animal.userData.sharedControllerId;animal.userData.sharedTargetPosition??=animal.position.clone();animal.userData.sharedTargetPosition.set(data.x,data.y||0,data.z);animal.userData.sharedTargetRotation=data.rotation||0;pendingSharedEncounters.delete(data.id);
   if(data.dead&&!animal.userData.dead)killAnimal(animal,false);return animal;
 }
 
@@ -567,6 +579,18 @@ function initializeAnimalStats(animal,wild=false){
   animal.userData.baseScale=animal.userData.baseScale||animal.scale.x;animal.userData.fatigue=0;animal.userData.exhausted=false;animal.userData.verticalVelocity=animal.userData.verticalVelocity||0;animal.userData.grounded=animal.userData.grounded??true;animal.userData.jumpCooldown=animal.userData.jumpCooldown||0;animal.userData.wild=wild;animal.userData.dead=false;animal.userData.restingForRecovery=false;animal.userData.cryCooldown=2+Math.random()*3;
 }
 
+function highestCompanionLevel(){return Math.max(1,...followers.map(animal=>animal.userData.level||1),...fallenFollowers.map(animal=>animal.userData.level||1));}
+
+function targetWildLevel(animal){
+  const cap=highestCompanionLevel(),minimum=Math.max(1,cap-3),spawnNumber=Number(animal.userData.spawnId)||0,random=rng(hash(spawnNumber+cap*97,(animal.userData.spawnCycle||0)*131+cap*7919));return minimum+Math.floor(random()*(cap-minimum+1));
+}
+
+function setWildAnimalLevel(animal,level=targetWildLevel(animal)){
+  if(!animal?.userData.wild||animal.userData.boss)return;const base=animalBaseStats[animal.userData.species]||{hp:45,attack:10,defense:4,speed:6.5},target=THREE.MathUtils.clamp(Math.floor(level)||1,1,highestCompanionLevel()),previousMax=Math.max(1,animal.userData.maxHp||base.hp),healthRatio=THREE.MathUtils.clamp((animal.userData.hp??previousMax)/previousMax,0,1);animal.userData.level=target;animal.userData.xp=0;animal.userData.maxHp=base.hp+(target-1)*8;animal.userData.hp=animal.userData.maxHp*healthRatio;animal.userData.attack=base.attack+(target-1)*2;animal.userData.defense=base.defense+(target-1);animal.userData.combatSpeed=base.speed+(target-1)*.15;
+}
+
+function refreshWildAnimalLevels(){animals.forEach(animal=>{if(!animal.userData.dead&&!animal.userData.boss&&!animal.userData.sharedEncounterId&&!animalInActiveBattle(animal)&&huntPrompt?.target!==animal)setWildAnimalLevel(animal);});}
+
 function xpNeeded(animal){return 20+animal.userData.level*15;}
 function entitySpotIsFree(x,z,radius,ignore=null){
   if(blockedByWorld(x,z,radius,0,1.65,ignore))return false;
@@ -612,7 +636,7 @@ function restoreLocalCompanions(){
     const row=Math.floor(index/2),side=index%2===0?-1:1;let x=hero.position.x+side*(1.4+row*.3),z=hero.position.z+2.2+row*1.1;for(let attempt=0;attempt<12&&!entitySpotIsFree(x,z,.62,animal);attempt++){const angle=attempt*.75,radius=2.2+attempt*.3;x=hero.position.x+Math.cos(angle)*radius;z=hero.position.z+Math.sin(angle)*radius;}
     animal.position.set(x,surfaceHeightAt(x,z,Infinity),z);scene.add(animal);followers.push(animal);
   });
-  localSaveRestored=true;pendingLocalSave=null;saveLocalGame(true);
+  localSaveRestored=true;pendingLocalSave=null;refreshWildAnimalLevels();saveLocalGame(true);
 }
 
 function placeAnimal(a,initial=false){
@@ -628,6 +652,7 @@ function placeAnimal(a,initial=false){
   }
   a.position.set(x,0,z);
   a.rotation.y=random()*Math.PI*2;
+  setWildAnimalLevel(a);
   resetAnimalMotion(a);
 }
 
@@ -691,26 +716,45 @@ const conversations=[
   [{speaker:'npc',text:'草地平台上看見的星星，似乎比地面更多。'},{speaker:'hero',text:'那我今晚也跳上去看看。'},{speaker:'npc',text:'小心別驚醒旁邊睡覺的兔子。'}],
   [{speaker:'npc',text:'老人們說，霧林不是沒有盡頭，而是會悄悄把走過的路搬到身後。'},{speaker:'hero',text:'所以地圖才總像在改變嗎？'},{speaker:'npc',text:'也許。只有記得同行者名字的人，才不會被森林繞回原地。'}],
   [{speaker:'npc',text:'深夜的螢火蟲不全是蟲，有些是迷路旅人的夢。'},{speaker:'hero',text:'要怎樣分辨牠們？'},{speaker:'npc',text:'真正的螢火蟲怕雨，夢的光卻會在雨裡變得更亮。'}],
-  [{speaker:'npc',text:'聽說每一位地區首領，從前都是守護森林邊界的動物。'},{speaker:'hero',text:'那牠們為甚麼會攻擊我們？'},{speaker:'npc',text:'牠們不是憎恨旅人，只是在確認我們有沒有保護同伴的力量。'}],
+  [{speaker:'npc',text:'有人說，地區首領都記得一副不屬於現在的影子。森林把那些影子藏得很深，連牠們自己也不願回頭看。'},{speaker:'hero',text:'那牠們為甚麼會攻擊我們？'},{speaker:'npc',text:'也許牠們只是想知道，世上是否真的有一些傷口，可以不靠遺忘便慢慢癒合。'}],
   [{speaker:'npc',text:'下雨後如果看見石頭上出現發光的腳印，千萬不要急著追。'},{speaker:'hero',text:'腳印會通往哪裡？'},{speaker:'npc',text:'有人說是古老獸王的巢，也有人追著走，第二天卻從森林另一端醒來。'}],
   [{speaker:'npc',text:'這裡的樹根會記住聲音。把秘密告訴老樹，很多年後葉子仍會低聲重複。'},{speaker:'hero',text:'那森林一定知道很多故事。'},{speaker:'npc',text:'也知道很多不該再被提起的名字。'}],
-  [{speaker:'npc',text:'你撿到的 coin，也許不是普通錢幣。傳說它們是消失王國留下的承諾。'},{speaker:'hero',text:'承諾也能拿來買東西嗎？'},{speaker:'npc',text:'只要仍有人相信它有價值，承諾就還沒有完全消失。'}],
+  [{speaker:'npc',text:'你撿到的金幣，也許不是普通錢幣。傳說它們是消失王國留下的承諾。'},{speaker:'hero',text:'承諾也能拿來買東西嗎？'},{speaker:'npc',text:'只要仍有人相信它有價值，承諾就還沒有完全消失。'}],
   [{speaker:'npc',text:'清晨最安靜的那一刻，我偶爾會聽到地底傳來鐘聲。'},{speaker:'hero',text:'森林下面有鐘樓？'},{speaker:'npc',text:'傳說整座森林長在一座沉睡城市之上，樹根就是它最後的街道。'}],
   [{speaker:'npc',text:'粉紅霧出現時，最好留意影子的方向。'},{speaker:'hero',text:'霧裡的影子有甚麼特別？'},{speaker:'npc',text:'如果影子沒有跟著你移動，那可能是森林裡另一個「你」正在看著這邊。'}],
   [{speaker:'npc',text:'那些看似隨意的木柵欄，其實全都朝向森林外面。'},{speaker:'hero',text:'不是用來阻止我們進去嗎？'},{speaker:'npc',text:'不。很久以前，人們建造它們，是怕外面的某樣東西走進森林。'}],
   [{speaker:'npc',text:'動物升級時的特殊叫聲，據說會被遠方的古老巨獸聽見。'},{speaker:'hero',text:'牠們會回應嗎？'},{speaker:'npc',text:'有時夜裡那聲很低的吼叫，就是牠們在向年輕的生命祝福。'}],
   [{speaker:'npc',text:'森林醫生很少談自己的過去，但有人看過他和地區首領和平地坐在一起。'},{speaker:'hero',text:'也許他以前就認識牠們。'},{speaker:'npc',text:'又或者，他比我們想像中更早來到這座森林。'}],
-  [{speaker:'npc',text:'如果風突然完全停下來，就在附近找一塊沒有長草的石頭。'},{speaker:'hero',text:'石頭下面藏著東西嗎？'},{speaker:'npc',text:'我不知道。傳說有人把耳朵貼上去，聽見了森林明天才會發生的事。'}]
+  [{speaker:'npc',text:'如果風突然完全停下來，就在附近找一塊沒有長草的石頭。'},{speaker:'hero',text:'石頭下面藏著東西嗎？'},{speaker:'npc',text:'我不知道。傳說有人把耳朵貼上去，聽見了森林明天才會發生的事。'}],
+  [{speaker:'npc',text:'森林醫生會調配回血藥水。帶著動物遠行前，最好先買一兩瓶放在身上。'},{speaker:'hero',text:'受傷後就不用每次都趕回診所了。'},{speaker:'npc',text:'沒錯，戰鬥中也能使用，只是醫生的存貨需要時間補充。'}],
+  [{speaker:'npc',text:'那些體型巨大的地區首領，不只是強大的野獸，也守護著這個世界被遺忘的真相。'},{speaker:'hero',text:'打敗牠們，牠們便會告訴我嗎？'},{speaker:'npc',text:'先證明你會保護同行的動物，首領才願意讓你接近答案。'}],
+  [{speaker:'npc',text:'動物也有自己喜歡的時刻。有些在清晨精神最好，有些卻要等月亮升起才會展現力量。'},{speaker:'hero',text:'天氣也會影響牠們嗎？'},{speaker:'npc',text:'會。晴天、陰天、雨天與粉紅霧，都可能喚醒不同動物的本能。'}],
+  [{speaker:'npc',text:'動物傷得太重時會不願出戰。讓牠停下休息，身體才會慢慢恢復。'},{speaker:'hero',text:'我也可以向醫生買藥水，對嗎？'},{speaker:'npc',text:'當然。懂得何時休息，也是旅行的一部分。'}]
 ];
 const merchantConversations=[
   [{speaker:'npc',text:'今天的森林很安靜，適合慢慢散步。'},{speaker:'hero',text:'你每天都會在這裡嗎？'},{speaker:'npc',text:'只要動物需要一個家，我就會留在這裡。'}],
-  [{speaker:'npc',text:'銀色 coin 在月光下特別容易找到。'},{speaker:'hero',text:'謝謝你的提示。'},{speaker:'npc',text:'不用客氣，路上小心。'}],
+  [{speaker:'npc',text:'銀色金幣在月光下特別容易找到。'},{speaker:'hero',text:'謝謝你的提示。'},{speaker:'npc',text:'不用客氣，路上小心。'}],
   [{speaker:'npc',text:'每隻動物都有自己的個性，不一定要買東西，也可以先和牠們相處。'},{speaker:'hero',text:'我會好好認識牠們的。'}],
   [{speaker:'npc',text:'有人問我這些動物從哪裡來。其實很多時候，是牠們自己找到我的。'},{speaker:'hero',text:'牠們知道你會替牠們找同伴。'},{speaker:'npc',text:'也可能是森林在替旅人挑選彼此。'}],
-  [{speaker:'npc',text:'金色 coin 上的花紋，是一種已經沒有人會寫的文字。'},{speaker:'hero',text:'上面寫了甚麼？'},{speaker:'npc',text:'一位學者說那是「歸來」，但他走進霧裡後就再也沒回來。'}],
+  [{speaker:'npc',text:'金色金幣上的花紋，是一種已經沒有人會寫的文字。'},{speaker:'hero',text:'上面寫了甚麼？'},{speaker:'npc',text:'一位學者說那是「歸來」，但他走進霧裡後就再也沒回來。'}],
   [{speaker:'npc',text:'首領附近的森林看似封閉，其實樹木會為真正需要離開的人讓路。'},{speaker:'hero',text:'要怎樣請樹木讓開？'},{speaker:'npc',text:'不是用說的。森林會看你如何對待並肩作戰的動物。'}],
-  [{speaker:'npc',text:'我從不把動物稱作商品。coin 只是旅人願意負起責任的證明。'},{speaker:'hero',text:'所以牠們最後仍是自己選擇跟誰走。'},{speaker:'npc',text:'沒錯。若牠不願意，再多 coin 也留不住牠。'}]
+  [{speaker:'npc',text:'我從不把動物稱作商品。金幣只是旅人願意負起責任的證明。'},{speaker:'hero',text:'所以牠們最後仍是自己選擇跟誰走。'},{speaker:'npc',text:'沒錯。若牠不願意，再多金幣也留不住牠。'}]
 ];
+const beginnerNpcConversations=[
+  [{speaker:'npc',text:'你還沒有動物同行嗎？沿路收集金幣，就可以向森林商人請一隻動物加入旅程。'},{speaker:'hero',text:'森林商人在哪裡？'},{speaker:'npc',text:'你知道起始帳篷嗎？帳篷附近守著幾隻動物的那位，就是商人。'}],
+  [{speaker:'npc',text:'獨自在霧林裡旅行會有點寂寞。先撿一些金幣，再到起始帳篷附近找森林商人吧。'},{speaker:'hero',text:'他會讓動物跟我同行嗎？'},{speaker:'npc',text:'只要準備足夠的金幣，並願意好好照顧牠們，商人會替你介紹。'}]
+];
+const merchantBeginnerConversations=[
+  [{speaker:'npc',text:'你還沒有動物同行吧？我這裡的動物都在等待可靠的旅伴。'},{speaker:'hero',text:'但我現在應該怎樣準備？'},{speaker:'npc',text:'先在森林收集金幣，再點擊我前方喜歡的動物。我會告訴你牠需要多少金幣。'}],
+  [{speaker:'npc',text:'歡迎回到起始帳篷附近。沒有動物陪伴的話，不妨看看我帶來的孩子們。'},{speaker:'hero',text:'我可以直接和牠們談談嗎？'},{speaker:'npc',text:'點擊想認識的動物吧。準備好金幣，我便會問你是否願意帶牠同行。'}]
+];
+
+function playerOwnsAnyAnimal(){return followers.length>0||fallenFollowers.length>0;}
+function npcConversationScripts(npc){
+  if(npc===merchant)return playerOwnsAnyAnimal()?merchantConversations:merchantBeginnerConversations;
+  if(!playerOwnsAnyAnimal()&&Math.random()<.5)return beginnerNpcConversations;
+  return conversations;
+}
 const animalVoices={
   'animal-deer':['呦——呦！','呦嗚～'],
   'animal-fox':['嗚嗚……嗷！','嗷嗚～'],
@@ -752,7 +796,7 @@ function relocateEmbeddedEntities(){
 
 function placeDoctorSafely(){
   if(!doctor||!blockedByWorld(doctor.position.x,doctor.position.z,.68,0,1.65,doctor))return;
-  let x=8,z=1;for(let attempt=0;attempt<16;attempt++){const angle=attempt*.78,radius=attempt?2+attempt*.28:0,cx=8+Math.cos(angle)*radius,cz=1+Math.sin(angle)*radius;if(entitySpotIsFree(cx,cz,.68,doctor)){x=cx;z=cz;break;}}doctor.position.set(x,0,z);
+  const origin=ORIGIN_LAYOUT.doctor;let x=origin.x,z=origin.z;for(let attempt=0;attempt<16;attempt++){const angle=attempt*.78,radius=attempt?2+attempt*.28:0,cx=origin.x+Math.cos(angle)*radius,cz=origin.z+Math.sin(angle)*radius;if(entitySpotIsFree(cx,cz,.68,doctor)){x=cx;z=cz;break;}}doctor.position.set(x,0,z);
 }
 
 function placeNpc(npc,index,initial=true){
@@ -825,7 +869,7 @@ function startConversation(npc,scripts=conversations){
 function startBossConversation(boss,onComplete){
   if(purchaseState)closePurchase();if(doctorState)closeDoctor();if(huntPrompt)closeHuntPrompt();
   if(boss.userData.motion){boss.userData.motion.walking=false;boss.userData.motion.weight=0;animateAnimalFeet(boss,boss.userData.motion.phase,0);}
-  conversation={npc:boss,script:bossConversationFor(boss),index:0,elapsed:0,lineDuration:3.8,onComplete};moving=false;marker.visible=false;
+  conversation={npc:boss,script:bossConversationFor(boss),index:0,elapsed:0,lineDuration:8.5,onComplete};moving=false;marker.visible=false;
 }
 
 function positionSpeechBubble(element,object,height){
@@ -882,7 +926,7 @@ function clearDoctorArea(){
 function openPurchase(slot){
   if(!slot?.animal||!merchant)return;if(huntPrompt)closeHuntPrompt();if(doctorState)closeDoctor();conversation=null;npcBubble.classList.add('hidden');heroBubble.classList.add('hidden');purchaseState={slot,anchor:merchant,thanksTimer:0};moving=false;marker.visible=false;
   const animal=slot.animal;shopBubble.dataset.speaker='森林商人';
-  shopText.textContent=`這隻${animal.userData.displayName}的售價是 ${animal.userData.price} 枚 coin。你想買下牠嗎？`;
+  shopText.textContent=`這隻${animal.userData.displayName}的售價是 ${animal.userData.price} 枚金幣。你想買下牠嗎？`;
   buyButton.disabled=false;shopActions.style.display='flex';shopBubble.classList.remove('hidden');
 }
 
@@ -890,7 +934,7 @@ function closePurchase(){purchaseState=null;shopBubble.classList.add('hidden');}
 cancelButton.addEventListener('click',closePurchase);
 buyButton.addEventListener('click',()=>{
   const slot=purchaseState?.slot,animal=slot?.animal;if(!animal)return;
-  if(coinBalance<animal.userData.price){shopText.textContent='你的 coin 還不夠，再去森林裡找找吧。等你準備好再來。';buyButton.disabled=false;return;}
+  if(coinBalance<animal.userData.price){shopText.textContent='你的金幣還不夠，再去森林裡找找吧。等你準備好再來。';buyButton.disabled=false;return;}
   coinBalance-=animal.userData.price;document.querySelector('#coinCount').textContent=coinBalance;
   animal.userData.shopAnimal=false;animal.userData.following=true;animal.userData.phase=Math.random()*Math.PI*2;animal.userData.walkWeight=0;animal.userData.verticalVelocity=0;animal.userData.grounded=true;animal.userData.jumpCooldown=0;animal.position.y=0;followers.push(animal);
   slot.animal=null;slot.restockTimer=12+Math.random()*10;
@@ -910,7 +954,7 @@ function setPotionCount(value,pulse=false){
 
 function buyDoctorPotion(){
   if(doctorPotionStock<=0)return showDoctorResult(`藥水暫時售罄了。下一瓶大約 ${Math.max(1,Math.ceil(doctorPotionRestockTimer))} 秒後調配完成。`);
-  if(coinBalance<DOCTOR_POTION_PRICE)return showDoctorResult(`一瓶藥水需要 ${DOCTOR_POTION_PRICE} 枚 coin，你現在還不夠。`);
+  if(coinBalance<DOCTOR_POTION_PRICE)return showDoctorResult(`一瓶藥水需要 ${DOCTOR_POTION_PRICE} 枚金幣，你現在還不夠。`);
   setCoinBalance(coinBalance-DOCTOR_POTION_PRICE);setPotionCount(potionCount+1,true);doctorPotionStock--;if(doctorPotionStock<DOCTOR_POTION_MAX_STOCK&&doctorPotionRestockTimer<=0)doctorPotionRestockTimer=DOCTOR_POTION_RESTOCK_TIME;showDoctorResult(`這是你的回血藥水。現在還有 ${doctorPotionStock} 瓶存貨。`);
 }
 
@@ -932,7 +976,7 @@ function showDoctorMenu(){
     doctorButton(`回血藥水 $${DOCTOR_POTION_PRICE} · 存貨 ${doctorPotionStock}`,buyDoctorPotion),
     doctorButton('全部治療 $20',()=>{
       const companions=followers.filter(animal=>!animal.userData.dead),patients=companions.filter(animal=>animal.userData.hp<animal.userData.maxHp-.01);if(!companions.length)return showDoctorResult('你現在沒有隨行動物。');if(!patients.length)return showDoctorResult('大家都很健康，現在不需要治療。');
-      if(coinBalance<20)return showDoctorResult('你的 coin 不足 20 枚。');
+      if(coinBalance<20)return showDoctorResult('你的金幣不足 20 枚。');
       setCoinBalance(coinBalance-20);companions.forEach(animal=>{animal.userData.hp=animal.userData.maxHp;animal.userData.restingForRecovery=false;});showDoctorResult('治療完成了。大家現在都恢復精神了。');
     }),
     doctorButton('復活一隻 $150',showReviveChoices,!fallenFollowers.length),
@@ -951,7 +995,7 @@ function showReviveChoices(){
 
 function reviveFollower(animal){
   if(!fallenFollowers.includes(animal))return showDoctorResult('這隻動物已經不在復活名單中。');
-  if(coinBalance<150)return showDoctorResult('復活需要 150 枚 coin，你現在還不夠。');
+  if(coinBalance<150)return showDoctorResult('復活需要 150 枚金幣，你現在還不夠。');
   setCoinBalance(coinBalance-150);fallenFollowers.splice(fallenFollowers.indexOf(animal),1);animal.userData.dead=false;animal.userData.deathTime=0;animal.userData.hp=animal.userData.maxHp;animal.userData.following=true;animal.userData.restingForRecovery=false;animal.userData.exhausted=false;animal.userData.grounded=true;animal.userData.verticalVelocity=0;animal.userData.walkWeight=0;animal.quaternion.identity();animateAnimalFeet(animal,0,0);
   let x=doctor.position.x+1.5,z=doctor.position.z+1.4;for(let attempt=0;attempt<10&&!entitySpotIsFree(x,z,.62,animal);attempt++){const angle=attempt*.8;x=doctor.position.x+Math.cos(angle)*(1.8+attempt*.2);z=doctor.position.z+Math.sin(angle)*(1.8+attempt*.2);}
   animal.position.set(x,0,z);animal.scale.setScalar(animal.userData.baseScale*.015);animal.userData.teleport={phase:'in',time:0,x,z};scene.add(animal);followers.push(animal);showDoctorResult(`${animal.userData.displayName}醒過來了。請繼續好好照顧牠。`);
@@ -965,9 +1009,9 @@ function showUpgradeChoices(){
 
 function doctorUpgrade(animal){
   if(!followers.includes(animal)||animal.userData.dead)return showDoctorResult('這隻動物目前無法接受訓練。');
-  if(coinBalance<500)return showDoctorResult('升級需要 500 枚 coin，你現在還不夠。');
+  if(coinBalance<500)return showDoctorResult('升級需要 500 枚金幣，你現在還不夠。');
   setCoinBalance(coinBalance-500);animal.userData.level++;animal.userData.maxHp+=8;animal.userData.hp=Math.min(animal.userData.maxHp,animal.userData.hp+8);animal.userData.attack+=2;animal.userData.defense+=1;animal.userData.combatSpeed+=.15;
-  const special=(animalVoices[animal.userData.species]||['嗷嗚——！','嗚——！'])[1];emitAnimalSound(animal,`✦ ${special}——！ ${special} ✦`,2.7);showDoctorResult(`${animal.userData.displayName}完成訓練了，看起來比之前更可靠。`);
+  refreshWildAnimalLevels();const special=(animalVoices[animal.userData.species]||['嗷嗚——！','嗚——！'])[1];emitAnimalSound(animal,`✦ ${special}——！ ${special} ✦`,2.7);showDoctorResult(`${animal.userData.displayName}完成訓練了，看起來比之前更可靠。`);
 }
 
 const huntBubble=document.createElement('div'),huntText=document.createElement('div'),huntActions=document.createElement('div'),huntYes=document.createElement('button'),huntNo=document.createElement('button');
@@ -985,25 +1029,25 @@ function closeHuntPrompt(){
 }
 
 const bossLegendStories={
-  'animal-deer':{past:'我曾帶著鹿群走過霧林最早的道路，那時天空還能從樹冠之間看見。',secret:'後來森林合上枝葉，把一座不該被找到的古城藏在根系下面。'},
-  'animal-fox':{past:'很久以前，我替迷路的旅人引路，也替森林藏起他們不願面對的記憶。',secret:'粉紅霧中的影子並非幻覺，而是被森林留下的另一種可能。'},
-  'animal-bunny':{past:'別因我的模樣小看我。我曾在第一聲地底鐘響起前，跑遍森林每一條舊路。',secret:'道路不是消失了；它們在沉睡，而且會在某個清晨同時醒來。'},
-  'animal-panda':{past:'我守著這片森林最古老的樹。它還是幼苗時，我就在這裡聽它做夢。',secret:'所有樹根都連著同一顆心，而那顆心最近開始不安地跳動。'},
-  'animal-hog':{past:'這些泥土曾是我的家園。我用獠牙翻開過人類刻意埋藏的石門。',secret:'門後沒有寶藏，只有一個會記住所有名字、卻沒有名字的存在。'},
-  'animal-monkey':{past:'我曾爬到森林最高的樹頂，從那裡看見霧外並不是天空。',secret:'我們以為自己困在森林裡，也許其實是森林在保護我們，不讓外面的東西看見。'},
-  'animal-tiger':{past:'我不是生來便是首領。上一位守護者把傷痕與責任交給我，自己走進了深綠色的霧。',secret:'每位首領都守著同一個誓言，而誓言真正防備的從來不是旅人。'},
-  'animal-parrot':{past:'我記得森林仍有人類王國時說過的每一句話，也記得他們最後一夜的呼喊。',secret:'散落各地的 coin 是他們留下的訊息；集齊的不是財富，而是一句未說完的警告。'}
+  'animal-deer':{past:'我曾把每一個清晨都抵押給一疊永遠做不完的事情，還以為窗邊那盞燈會一直等我。等我終於抬頭，燈芯已短得照不亮下一個冬天。',secret:'我在這裡追逐許多落葉，總以為找到其中一片，便能換回那個沒有回去的晚上。可風說，惦掛若只向昨日吹，便永遠到不了仍在等待的人身旁。'},
+  'animal-fox':{past:'我曾替一隻雛鳥畫好所有飛行的方向。我折斷牠想去遠方的枝條，說籠子的形狀就是天空；後來門仍然開著，牠卻再也沒有飛回來。',secret:'我守著那隻空籠太久，連月光也生了鏽。森林偶爾問我：若愛真是一雙手，為甚麼握得愈緊，掌心留下的便只有羽毛？'},
+  'animal-bunny':{past:'我把第一步擦掉又重畫，嫌它不夠端正；再抬頭時，道路已長滿比我更高的草。遠方沒有離開，是我一直要求雙腳先學會不跌倒。',secret:'霧裡有一條路，只在踩錯時才會出現。我不明白它通往哪裡，卻開始懷疑，所謂完美，也許只是恐懼替停步取的一個好聽名字。'},
+  'animal-panda':{past:'我把每一個人的行囊都背到自己身上，卻在有人伸手時說不需要。後來肩上的東西變成山，我便怪責山下的人從未看見我。',secret:'這片竹林只在我承認疲倦時發出聲音。它說，總把空出的懷抱藏在背後，溫柔找不到入口，也會誤以為自己不被需要。'},
+  'animal-hog':{past:'有一封信在盛怒裡被我撕碎。我等著另一封信先來，等到信箱長出青苔，才知道有些道路會在兩個人都不肯先走時慢慢消失。',secret:'我用獠牙翻遍泥土，仍找不回那些紙片。夜風卻說，道歉不一定能抵達舊日，但每一句不再傷人的話，都能替未來少埋下一根刺。'},
+  'animal-monkey':{past:'我曾在每一面鏡子前模仿別人的姿勢，誰爬得高，我便爬得更高。到掌聲從四面響起時，我卻找不到哪一個倒影會跟著我回家。',secret:'樹頂的風沒有排名，也從不問葉子落得比誰更遠。也許只有停止追趕別人的背影，腳下那條安靜的路才肯說出自己的名字。'},
+  'animal-tiger':{past:'我把想說的話鎖進牙齒後面，以為沉默的門愈厚，屋裡的人便愈安全。後來另一扇門也關上了，我們隔著很近的牆，聽彼此的腳步一年年走遠。',secret:'雷聲教會眾獸躲避，卻只有很輕的一句話能讓誰停下來。可惜那句話在我胸口徘徊太久，如今一出口，便散成不知道該飛向哪裡的灰。'},
+  'animal-parrot':{past:'我曾為了換取一陣笑聲，把別人交給我的一顆種子剖開給眾人看。笑聲很快停了，那顆種子卻再也沒有發芽。',secret:'森林記得所有被風吹散的話。它們有些落地成花，有些落進看不見的地方長成荊棘；我仍在學習，下一句聲音究竟該成為刀，還是替誰留一點光。'}
 };
 
 function bossConversationFor(boss){
-  const story=bossLegendStories[boss.userData.species]||{past:'我在這片森林守候了很久，久得連樹木都忘記最初的季節。',secret:'霧林隱藏著一個足以改變所有旅人命運的真相。'};
+  const story=bossLegendStories[boss.userData.species]||{past:'我曾在一扇關上的門前等了太久，久得忘記門是誰關上的，也忘記自己原本要到哪裡去。',secret:'森林的風總想把甚麼帶走，我卻一直握緊掌心。也許有些東西並非不能消失，只是我們害怕放手以後，連自己也會變得不再完整。'};
   return [
     {speaker:'npc',text:story.past},
-    {speaker:'hero',text:'你一直守在這裡，是為了保護森林的秘密嗎？'},
+    {speaker:'hero',text:'那像是一段很久以前的記憶。森林為甚麼把它留在你身上？'},
     {speaker:'npc',text:story.secret},
-    {speaker:'hero',text:'請告訴我完整的真相。'},
-    {speaker:'npc',text:'想知道真相，就先在戰鬥中擊敗我。但要記住，我遠比你沿途遇見的野獸強大。'},
-    {speaker:'npc',text:'帶著你的同伴作出選擇吧——前進，還是現在離開。'}
+    {speaker:'hero',text:'我不完全明白。你是在等風帶走甚麼，還是在等甚麼重新回來？'},
+    {speaker:'npc',text:'也許兩者都不是。我只知道，若你想聽見樹根下面那句沒有意義的回答，就先在戰鬥中讓我忘記如何緊握。'},
+    {speaker:'npc',text:'不要因幾句舊夢而輕敵。我遠比沿途的野獸強大——讓你的同伴替你作證，或在風記住你以前離開。'}
   ];
 }
 
@@ -1031,7 +1075,7 @@ function gainExperience(animal,amount){
     animal.userData.attack+=2;animal.userData.defense+=1;animal.userData.combatSpeed+=.15;
   }
   if(levels){
-    const special=(animalVoices[animal.userData.species]||['嗷嗚——！','嗚——！'])[1];animal.userData.cryCooldown=4;
+    if(animal.userData.following)refreshWildAnimalLevels();const special=(animalVoices[animal.userData.species]||['嗷嗚——！','嗚——！'])[1];animal.userData.cryCooldown=4;
     emitAnimalSound(animal,`✦ ${special}——！ ${special} ✦`,2.7);
   }
   return levels;
@@ -1042,7 +1086,9 @@ function showBattleMessage(message,duration=1.8){
 }
 
 function selectBattleAllies(candidates){
-  const roll=Math.random(),count=Math.min(candidates.length,roll<.86?1:roll<.97?2:3),pool=[...candidates],selected=[];
+  // Ordinary hunts still favour one-on-one fights, but companions now have a
+  // noticeably better chance of joining together: 65% solo, 27% duo, 8% trio.
+  const roll=Math.random(),count=Math.min(candidates.length,roll<.65?1:roll<.92?2:3),pool=[...candidates],selected=[];
   while(selected.length<count&&pool.length){
     const weights=pool.map(animal=>{
       const personality=animalPersonalityDefs[animal.userData.personality]||animalPersonalityDefs.steady,health=THREE.MathUtils.clamp(animal.userData.hp/animal.userData.maxHp,0,1);
@@ -1087,7 +1133,21 @@ function openBattleAction(){
 }
 
 function openHeroAction(){
-  if(battle)return openBattleAction();if(purchaseState)closePurchase();if(doctorState)closeDoctor();if(huntPrompt)closeHuntPrompt();conversation=null;npcBubble.classList.add('hidden');heroBubble.classList.add('hidden');moving=false;marker.visible=false;battleActionState={mode:'menu',context:'field'};battleActionBubble.dataset.speaker=localDisplayName;battleActionText.textContent='想要做甚麼？';showHeroActionButtons(potionButton,closeActionButton);battleActionBubble.classList.remove('hidden');
+  if(battle)return openBattleAction();if(purchaseState)closePurchase();if(doctorState)closeDoctor();if(huntPrompt)closeHuntPrompt();conversation=null;npcBubble.classList.add('hidden');heroBubble.classList.add('hidden');moving=false;marker.visible=false;battleActionState={mode:'menu',context:'field'};battleActionBubble.dataset.speaker=localDisplayName;battleActionText.textContent='想要做甚麼？';showHeroActionButtons(potionButton,doctorButton('返回起始帳篷',returnToOrigin),doctorButton('再見動物',showGoodbyeChoices),closeActionButton);battleActionBubble.classList.remove('hidden');
+}
+
+function showGoodbyeChoices(){
+  if(battle)return openBattleAction();battleActionState={mode:'goodbye',context:'field'};const candidates=followers.filter(animal=>!animal.userData.dead);
+  if(!candidates.length){battleActionText.textContent=fallenFollowers.length?'目前沒有能夠離隊的隨活動物。倒下的動物仍可請醫生復活。':'你目前還沒有隨行動物。';showHeroActionButtons(doctorButton('返回',openHeroAction),closeActionButton);return;}
+  battleActionText.textContent='你想和哪一隻動物說再見？說再見後牠會離開隊伍。';showHeroActionButtons(...candidates.map(animal=>doctorButton(`${animal.userData.displayName} · Lv.${animal.userData.level}`,()=>confirmGoodbyeAnimal(animal))),doctorButton('返回',openHeroAction),closeActionButton);
+}
+
+function confirmGoodbyeAnimal(animal){
+  if(!followers.includes(animal)||animal.userData.dead)return showGoodbyeChoices();battleActionState={mode:'goodbye-confirm',context:'field'};battleActionText.textContent=`真的要和 ${animal.userData.displayName} 說再見，讓牠離開隊伍嗎？`;showHeroActionButtons(doctorButton('確定說再見',()=>releaseCompanion(animal)),doctorButton('留下牠',showGoodbyeChoices),closeActionButton);
+}
+
+function releaseCompanion(animal){
+  const index=followers.indexOf(animal);if(index<0||animal.userData.dead)return showGoodbyeChoices();cancelFollowerTeleport(animal);followers.splice(index,1);scene.remove(animal);const bubble=cryBubbles.get(animal);bubble?.remove();cryBubbles.delete(animal);refreshWildAnimalLevels();saveLocalGame(true);battleActionState={mode:'message',context:'field',timer:2.4};battleActionText.textContent=`你向 ${animal.userData.displayName} 道別。牠回頭看了你一眼，然後慢慢走進森林。`;battleActionButtons.style.display='none';
 }
 
 function showPotionChoices(){
@@ -1143,13 +1203,13 @@ closeActionButton.addEventListener('click',closeBattleAction);
 
 function startBattle(){
   const enemy=huntPrompt?.target;if(!enemy||enemy.userData.dead)return closeHuntPrompt();
-  const candidates=followers.filter(a=>!a.userData.dead&&a.userData.hp/a.userData.maxHp>=.25);
+  if(!enemy.userData.boss&&!enemy.userData.sharedEncounterId)setWildAnimalLevel(enemy);const livingFollowers=followers.filter(a=>!a.userData.dead),candidates=enemy.userData.boss?livingFollowers:livingFollowers.filter(a=>a.userData.hp/a.userData.maxHp>=.25);
   if(!candidates.length){huntText.textContent='你的動物目前太虛弱了。先讓牠停下來休息回血吧。';huntActions.style.display='none';return;}
-  const allies=selectBattleAllies(candidates);
+  const allies=enemy.userData.boss?[...candidates]:selectBattleAllies(candidates);
   if(currentRoom&&!enemy.userData.boss&&multiplayerSocket?.readyState===WebSocket.OPEN){
     enemy.userData.sharedEncounterId||=`${enemy.userData.species}:${Math.round(enemy.position.x*2)}:${Math.round(enemy.position.z*2)}`;
     enemy.userData.sharedControllerId||=localPlayerId;
-    multiplayerSocket.send(JSON.stringify({type:'encounter_start',encounter:{id:enemy.userData.sharedEncounterId,species:enemy.userData.species,x:enemy.position.x,y:enemy.position.y,z:enemy.position.z,maxHp:enemy.userData.maxHp}}));
+    multiplayerSocket.send(JSON.stringify({type:'encounter_start',encounter:{id:enemy.userData.sharedEncounterId,species:enemy.userData.species,level:enemy.userData.level,x:enemy.position.x,y:enemy.position.y,z:enemy.position.z,maxHp:enemy.userData.maxHp}}));
   }
   if(currentRoom&&enemy.userData.boss&&multiplayerSocket?.readyState===WebSocket.OPEN){enemy.userData.sharedControllerId||=localPlayerId;multiplayerSocket.send(JSON.stringify({type:'boss_start',region:enemy.userData.bossRegion}));}
   closeHuntPrompt();moving=false;marker.visible=false;
@@ -1279,7 +1339,7 @@ function finishBattle(playerWon){
   if(!battle||battle.ending)return;
   battle.ending=1.8;[...battle.allies,battle.enemy].filter(a=>!a.userData.dead).forEach(resetCombatRollPose);
   if(playerWon){
-    const survivors=battle.allies.filter(a=>!a.userData.dead),reward=battle.enemy.userData.boss?90+battle.enemy.userData.level*15:14+battle.enemy.userData.level*7,coinReward=battle.enemy.userData.boss?120+battle.enemy.userData.level*10:6+battle.enemy.userData.level*4,startTotal=battle.allies.reduce((sum,a)=>sum+(battle.startingHp.get(a)||a.userData.maxHp),0),remainingTotal=survivors.reduce((sum,a)=>sum+a.userData.hp,0),averageHealth=survivors.reduce((sum,a)=>sum+a.userData.hp/a.userData.maxHp,0)/Math.max(1,survivors.length),retained=remainingTotal/Math.max(1,startTotal);
+    const enemyLevel=Math.max(1,battle.enemy.userData.level||1),survivors=battle.allies.filter(a=>!a.userData.dead),reward=battle.enemy.userData.boss?80+enemyLevel*25:10+enemyLevel*10,coinReward=battle.enemy.userData.boss?120+enemyLevel*10:6+enemyLevel*4,startTotal=battle.allies.reduce((sum,a)=>sum+(battle.startingHp.get(a)||a.userData.maxHp),0),remainingTotal=survivors.reduce((sum,a)=>sum+a.userData.hp,0),averageHealth=survivors.reduce((sum,a)=>sum+a.userData.hp/a.userData.maxHp,0)/Math.max(1,survivors.length),retained=remainingTotal/Math.max(1,startTotal);
     const outcome=survivors.length<battle.allies.length||averageHealth<.3||retained<.42?'hard':averageHealth>=.72&&retained>=.76?'great':'close',outcomeLabel={great:'大勝',close:'小勝',hard:'苦勝'}[outcome];
     survivors.forEach((animal,index)=>{
       const leveled=gainExperience(animal,reward),[first,second]=animalVoices[animal.userData.species]||['嗚嗚','嗷嗚'];
@@ -1622,7 +1682,7 @@ function returnToOrigin(){
     for(let attempt=0;attempt<10&&blockedByWorld(x,z,.62,0,1.1);attempt++){const angle=attempt*Math.PI*.7;x=Math.cos(angle)*(2.2+attempt*.35);z=Math.sin(angle)*(2.2+attempt*.35);}
     startFollowerTeleport(animal,x,z);
   });
-  showBattleMessage('已返回霧林區域的起點。',2.2);
+  showBattleMessage('已返回起始帳篷旁邊。',2.2);
 }
 
 function setTarget(e){
@@ -1635,7 +1695,7 @@ function setTarget(e){
   const follower=clickedFollower();
   if(follower&&follower.position.distanceTo(hero.position)<=3.4){startConversation(follower,animalConversationsFor(follower));return;}
   const npc=clickedNpc();
-  if(npc&&npc.position.distanceTo(hero.position)<=3.4){if(npc===doctor)showDoctorMenu();else startConversation(npc,npc===merchant?merchantConversations:conversations);return;}
+  if(npc&&npc.position.distanceTo(hero.position)<=3.4){if(npc===doctor)showDoctorMenu();else startConversation(npc,npcConversationScripts(npc));return;}
   const wild=clickedWildAnimal();
   const wildInteractionDistance=wild?.userData.boss?(wild.userData.collisionRadius||3)+5:4.8;
   if(wild&&wild.position.distanceTo(hero.position)<=wildInteractionDistance){
@@ -1903,11 +1963,11 @@ async function init(){
     placeNpc(npc,i,true);scene.add(npc);npcs.push(npc);
   }).catch(err=>console.error(`${data[0]} loading error:`,err)));
   const merchantReady=loadObj('characters','character-male-f').then(obj=>{
-    merchant=new THREE.Group();const model=prepModel(obj,2.25);model.rotation.y=0;merchant.add(model);merchant.position.set(-8,0,1);merchant.rotation.y=0;merchant.userData.displayName='森林商人';merchant.userData.isNpc=true;scene.add(merchant);
+    merchant=new THREE.Group();const model=prepModel(obj,2.25);model.rotation.y=0;merchant.add(model);merchant.position.set(ORIGIN_LAYOUT.merchant.x,0,ORIGIN_LAYOUT.merchant.z);merchant.rotation.y=0;merchant.userData.displayName='森林商人';merchant.userData.isNpc=true;merchant.userData.collisionRadius=.68;scene.add(merchant);
   }).catch(err=>console.error('Merchant loading error:',err));
   const doctorReady=loadObj('characters','character-male-e').then(obj=>{
     doctor=new THREE.Group();const model=prepModel(obj,2.25);model.rotation.y=0;doctor.add(model);doctor.userData.displayName='森林醫生';doctor.userData.isNpc=true;doctor.userData.collisionRadius=.68;
-    let x=8,z=1;for(let attempt=0;attempt<12&&!entitySpotIsFree(x,z,.68,doctor);attempt++){const angle=attempt*.8;x=7+Math.cos(angle)*(2+attempt*.25);z=1+Math.sin(angle)*(2+attempt*.25);}doctor.position.set(x,0,z);doctor.rotation.y=0;scene.add(doctor);
+    const origin=ORIGIN_LAYOUT.doctor;let x=origin.x,z=origin.z;for(let attempt=0;attempt<12&&!entitySpotIsFree(x,z,.68,doctor);attempt++){const angle=attempt*.8;x=origin.x+Math.cos(angle)*(2+attempt*.25);z=origin.z+Math.sin(angle)*(2+attempt*.25);}doctor.position.set(x,0,z);doctor.rotation.y=0;scene.add(doctor);
   }).catch(err=>console.error('Doctor loading error:',err));
   Promise.all([merchantReady,doctorReady,Promise.allSettled(animalLoads)]).then(()=>{restoreLocalCompanions();shopSlots.forEach(spawnShopAnimal);clearDoctorArea();updateBossRegions();refreshBossArenas();relocateEmbeddedEntities();});
   Promise.allSettled([remotePlayerReady,...animalLoads]).then(()=>{networkAssetsReady=true;notifyMultiplayerReady();});
