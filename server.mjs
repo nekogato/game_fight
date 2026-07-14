@@ -1,6 +1,6 @@
 import { createServer } from 'node:http';
 import { readFile, stat } from 'node:fs/promises';
-import { extname, join } from 'node:path';
+import { extname, join, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createServer as createViteServer } from 'vite';
 import { WebSocketServer, WebSocket } from 'ws';
@@ -8,16 +8,28 @@ import { WebSocketServer, WebSocket } from 'ws';
 const root=fileURLToPath(new URL('.',import.meta.url));
 const production=process.env.NODE_ENV==='production';
 const rooms=new Map();
-const mime={'.html':'text/html; charset=utf-8','.js':'text/javascript; charset=utf-8','.css':'text/css; charset=utf-8','.json':'application/json','.png':'image/png','.jpg':'image/jpeg','.jpeg':'image/jpeg','.obj':'text/plain','.mtl':'text/plain'};
+const mime={'.html':'text/html; charset=utf-8','.js':'text/javascript; charset=utf-8','.css':'text/css; charset=utf-8','.json':'application/json','.png':'image/png','.jpg':'image/jpeg','.jpeg':'image/jpeg','.webp':'image/webp','.obj':'text/plain; charset=utf-8','.mtl':'text/plain; charset=utf-8'};
+const publicAssetFolders=new Set(['animals','characters','platformer']);
 let vite;
+
+async function serveFile(req,res,path,cache=false){
+  const data=await readFile(path);res.statusCode=200;res.setHeader('Content-Type',mime[extname(path).toLowerCase()]||'application/octet-stream');if(cache)res.setHeader('Cache-Control','public, max-age=86400');res.end(req.method==='HEAD'?undefined:data);
+}
 
 const server=createServer(async(req,res)=>{
   if(!production)return vite.middlewares(req,res,()=>{res.statusCode=404;res.end('Not found');});
   try{
-    const pathname=decodeURIComponent(new URL(req.url,'http://localhost').pathname);
-    let path=join(root,'dist',pathname==='/'?'index.html':pathname.replace(/^\/+/,''));
-    if(!(await stat(path)).isFile())path=join(root,'dist','index.html');
-    const data=await readFile(path);res.setHeader('Content-Type',mime[extname(path)]||'application/octet-stream');res.end(data);
+    const pathname=decodeURIComponent(new URL(req.url,'http://localhost').pathname),relative=pathname.replace(/^\/+/,'');
+    const folder=relative.split('/')[0];
+    if(publicAssetFolders.has(folder)){
+      const assetRoot=resolve(root,folder),assetPath=resolve(root,relative);
+      if(assetPath!==assetRoot&&!assetPath.startsWith(`${assetRoot}${sep}`))throw new Error('Invalid asset path');
+      if(!(await stat(assetPath)).isFile())throw new Error('Asset not found');
+      return serveFile(req,res,assetPath,true);
+    }
+    const distRoot=resolve(root,'dist'),distPath=resolve(distRoot,relative||'index.html');
+    if(distPath.startsWith(`${distRoot}${sep}`)&&(await stat(distPath).catch(()=>null))?.isFile())return serveFile(req,res,distPath,true);
+    return serveFile(req,res,join(distRoot,'index.html'));
   }catch{res.statusCode=404;res.end('Not found');}
 });
 
