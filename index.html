@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="zh-Hant">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#07130e" />
+    <title>森之漫遊 · Endless Forest</title>
+  </head>
+  <body>
+    <div id="app">
+      <canvas id="world" aria-label="可互動的無盡森林"></canvas>
+
+      <header class="topbar">
+        <a class="brand" href="#" aria-label="森之漫遊首頁">
+          <span class="brand-mark">✦</span>
+          <span><b>森之漫遊</b><small>ENDLESS FOREST</small></span>
+        </a>
+        <div class="status"><i></i><span>森林正在甦醒</span></div>
+      </header>
+
+      <aside class="hero-card">
+        <p class="eyebrow">TRAVELLER 001</p>
+        <div class="portrait" aria-hidden="true"><span>主</span></div>
+        <div>
+          <h2>小森</h2>
+          <p>森林漫遊者 · 主人公</p>
+        </div>
+      </aside>
+
+      <section class="intro" id="intro">
+        <p class="eyebrow">A QUIET PLACE WITHOUT AN END</p>
+        <h1>走進，一座<br /><em>沒有盡頭</em>的森林</h1>
+        <p class="lede">左鍵移動，右鍵跳躍。收集 coin，靠近旅人或商店動物並點擊互動。<br />帶著動物點擊野生動物可選擇狩獵；受傷的動物停下來才會回血。</p>
+        <div class="start-actions">
+          <button id="beginBtn"><span>單人漫遊</span><b>↗</b></button>
+          <div class="coop-panel">
+            <p>合作模式 · 最多 4 人</p>
+            <div class="coop-row"><input id="playerName" maxlength="12" value="小森" aria-label="玩家名稱" /><input id="roomCode" maxlength="6" placeholder="房間代碼" aria-label="房間代碼" /></div>
+            <div class="coop-row"><button id="createRoomBtn" type="button">建立房間</button><button id="joinRoomBtn" type="button">加入房間</button></div>
+            <small id="coopStatus">建立房間後，把代碼告訴朋友即可。</small>
+          </div>
+        </div>
+      </section>
+
+      <div class="hint" id="hint">
+        <span class="mouse"><i></i></span>
+        <span><b>左鍵移動 · 右鍵跳躍</b><small>CLICK TO MOVE · RIGHT CLICK TO JUMP</small></span>
+      </div>
+
+      <div class="coordinates"><span>霧林區域</span><b id="coords">N 00 · E 00</b><em id="bossTracker">正在尋找首領蹤跡…</em><button id="returnBtn" type="button">返回</button></div>
+      <div class="wallet"><span>COINS</span><b id="coinCount">0</b></div>
+      <div class="room-hud hidden" id="roomHud"><span>CO-OP</span><b id="roomLabel">ROOM ------</b><small id="playerCount">1 / 4 PLAYERS</small><button id="leaveRoomBtn" type="button">離開</button></div>
+      <div class="loader" id="loader"><span></span><p>正在喚醒森林…</p></div>
+    </div>
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>
