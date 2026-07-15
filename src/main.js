@@ -1,6 +1,11 @@
 import * as THREE from 'three';
 import { MTLLoader } from 'three/addons/loaders/MTLLoader.js';
 import { OBJLoader } from 'three/addons/loaders/OBJLoader.js';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
+import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
+import { BokehPass } from 'three/addons/postprocessing/BokehPass.js';
 import './style.css';
 import { trackGameEvent } from './analytics.js';
 
@@ -42,6 +47,36 @@ renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 renderer.outputColorSpace = THREE.SRGBColorSpace;
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
 renderer.toneMappingExposure = 1.05;
+
+// Render the 3D world in discrete frames for a stop-motion feel while the
+// gameplay simulation, input, audio, and networking continue at full speed.
+const STOP_MOTION_ENABLED=true,STOP_MOTION_FPS=10;
+const STOP_MOTION_FRAME_MS=1000/STOP_MOTION_FPS;
+let lastStopMotionRenderAt=null;
+
+// Experimental depth-of-field and pixelation passes. Each can be disabled
+// independently without changing scene, UI, or gameplay code.
+const DEPTH_OF_FIELD_ENABLED=true,PIXELATION_ENABLED=false,PIXELATION_PIXEL_SIZE=3;
+let postComposer=null,bokehPass=null,pixelPass=null;const dofFocusPoint=new THREE.Vector3();
+if(DEPTH_OF_FIELD_ENABLED||PIXELATION_ENABLED){postComposer=new EffectComposer(renderer);postComposer.addPass(new RenderPass(scene,camera));}
+if(DEPTH_OF_FIELD_ENABLED){bokehPass=new BokehPass(scene,camera,{focus:23,aperture:.0006,maxblur:.012});postComposer.addPass(bokehPass);}
+if(PIXELATION_ENABLED){
+  const pixelationShader={
+    uniforms:{tDiffuse:{value:null},resolution:{value:new THREE.Vector2()},pixelSize:{value:PIXELATION_PIXEL_SIZE*renderer.getPixelRatio()}},
+    vertexShader:'varying vec2 vUv; void main(){vUv=uv;gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.0);}',
+    fragmentShader:'uniform sampler2D tDiffuse; uniform vec2 resolution; uniform float pixelSize; varying vec2 vUv; void main(){vec2 block=vec2(pixelSize)/resolution;vec2 pixelUv=block*(floor(vUv/block)+0.5);gl_FragColor=texture2D(tDiffuse,pixelUv);}'
+  };
+  pixelPass=new ShaderPass(pixelationShader);postComposer.addPass(pixelPass);
+}
+if(postComposer)postComposer.addPass(new OutputPass());
+
+function updatePostProcessResolution(){
+  if(!postComposer)return;const drawingSize=new THREE.Vector2();renderer.getDrawingBufferSize(drawingSize);
+  if(pixelPass){pixelPass.uniforms.resolution.value.copy(drawingSize);pixelPass.uniforms.pixelSize.value=PIXELATION_PIXEL_SIZE*renderer.getPixelRatio();}
+}
+updatePostProcessResolution();
+function renderWorld(){if(postComposer)postComposer.render();else renderer.render(scene,camera);}
+function resizeWorldRenderer(){renderer.setSize(innerWidth,innerHeight);if(!postComposer)return;postComposer.setSize(innerWidth,innerHeight);if(bokehPass)bokehPass.uniforms.aspect.value=camera.aspect;updatePostProcessResolution();}
 
 const hemisphereLight=new THREE.HemisphereLight(0xb7d6aa,0x182015,1.65);scene.add(hemisphereLight);
 const sun = new THREE.DirectionalLight(0xffedba, 2.2);
@@ -2153,7 +2188,7 @@ function updateBossTracker(){
   tracker.textContent=distance<16?`${boss.userData.displayName} · 氣息就在附近`:`${boss.userData.displayName} · ${direction}方約 ${distance}m`;
 }
 
-function animate(){
+function animate(frameTime=0){
   requestAnimationFrame(animate); const dt=Math.min(clock.getDelta(),.04),t=clock.elapsedTime;
   const previousHeroX=hero.position.x,previousHeroZ=hero.position.z;
   if(moving){const delta=target.clone().sub(hero.position);delta.y=0;const dist=delta.length();if(dist>.15){const dir=delta.normalize();moveHero(dir,Math.min(5.2*dt,dist));hero.rotation.y=Math.atan2(dir.x,dir.z);}else{moving=false;marker.visible=false;}}
@@ -2172,13 +2207,17 @@ function animate(){
   shadow.material.opacity=.35*Math.max(.25,1-(hero.position.y-shadowY)/4);
   recycleDistantAnimals();
   const desired=new THREE.Vector3(hero.position.x+12,hero.position.y+11,hero.position.z+16);camera.position.lerp(desired,1-Math.pow(.001,dt));camera.lookAt(hero.position.x,hero.position.y+1.8,hero.position.z);
+  if(bokehPass){camera.updateMatrixWorld();dofFocusPoint.set(hero.position.x,hero.position.y+1.45,hero.position.z).applyMatrix4(camera.matrixWorldInverse);const focusDistance=Math.max(camera.near,-dofFocusPoint.z);bokehPass.uniforms.focus.value=THREE.MathUtils.damp(bokehPass.uniforms.focus.value,focusDistance,12,dt);}
   updateTreeCameraOcclusion(dt);
   updateConversation();updateAnimalOverlays(dt);
   updateOnlinePlayerCard(false,t);
   localSaveElapsed+=dt;if(localSaveElapsed>=1.5){localSaveElapsed=0;saveLocalGame();}
   updateBossTracker();
   document.querySelector('#coords').textContent=`N ${String(Math.abs(Math.round(hero.position.z))).padStart(2,'0')} · E ${String(Math.abs(Math.round(hero.position.x))).padStart(2,'0')}`;
-  renderer.render(scene,camera);
+  if(!STOP_MOTION_ENABLED||lastStopMotionRenderAt===null||frameTime-lastStopMotionRenderAt>=STOP_MOTION_FRAME_MS){
+    renderWorld();
+    lastStopMotionRenderAt=lastStopMotionRenderAt===null?frameTime:frameTime-(frameTime-lastStopMotionRenderAt)%STOP_MOTION_FRAME_MS;
+  }
 }
 
 async function init(){
@@ -2220,5 +2259,5 @@ async function init(){
 }
 init();
 
-addEventListener('resize',()=>{camera.aspect=innerWidth/innerHeight;camera.updateProjectionMatrix();renderer.setSize(innerWidth,innerHeight);});
+addEventListener('resize',()=>{camera.aspect=innerWidth/innerHeight;camera.updateProjectionMatrix();resizeWorldRenderer();});
 addEventListener('pagehide',()=>{endAnalyticsSession();saveLocalGame(true);});
