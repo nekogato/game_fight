@@ -10,6 +10,7 @@
     "start": "NODE_ENV=production node server.mjs"
   },
   "dependencies": {
+    "posthog-js": "^1.400.1",
     "three": "^0.178.0",
     "ws": "^8.21.0"
   },

@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { MTLLoader } from 'three/addons/loaders/MTLLoader.js';
 import { OBJLoader } from 'three/addons/loaders/OBJLoader.js';
 import './style.css';
+import { trackGameEvent } from './analytics.js';
 
 const canvas = document.querySelector('#world');
 const bgm=document.querySelector('#bgm'),musicToggle=document.querySelector('#musicToggle'),MUSIC_PREF_KEY='endless-forest-music';
@@ -88,6 +89,7 @@ const platformTemplates=new Map(),decorTemplates=new Map(),coinTemplates=new Map
 const bossArenaGroup=new THREE.Group();scene.add(bossArenaGroup);
 const BOSS_ARENA_CLEAR_RADIUS=14,BOSS_ARENA_RING_RADIUS=15.8,BOSS_ARENA_LOAD_RADIUS=98;
 const collectedCoins=new Set();
+const coinRespawns=new Map(),COIN_RESPAWN_MIN_MS=120000,COIN_RESPAWN_MAX_MS=300000;
 const coinLayoutSeed=(Math.random()*0x7fffffff)|0;
 const coinDefs=[['coin-bronze',1],['coin-bronze',1],['coin-silver',3],['coin-gold',5]];
 const LOCAL_SAVE_KEY='endless-forest-personal-v1';
@@ -154,7 +156,7 @@ function populate(tile,tx,tz){
   for(let i=0;i<15;i++){
     const [name,baseScale]=treeDefs[Math.floor(random()*treeDefs.length)],template=decorTemplates.get(name);if(!template)continue;
     const treeScale=baseScale*(.75+random()*.5),spot=findSpot(treeScale*.5,TILE-2);if(!spot)continue;
-    const [x,z]=spot,tree=template.clone(true);tree.scale.setScalar(treeScale);tree.position.set(x,0,z);tree.rotation.y=random()*Math.PI*2;tree.userData.blocking=true;tree.userData.arenaClearable=true;props.add(tree);
+    const [x,z]=spot,tree=template.clone(true);tree.scale.setScalar(treeScale);tree.position.set(x,0,z);tree.rotation.y=random()*Math.PI*2;tree.userData.blocking=true;tree.userData.arenaClearable=true;tree.userData.cameraFadeTree=true;props.add(tree);
     reserve(x,z,treeScale*.5);tile.userData.obstacles.push({type:'circle',x,z,radius:treeScale*.25,top:99});
   }
 
@@ -174,9 +176,11 @@ function populate(tile,tx,tz){
   });
 
   coinDefs.forEach(([name,value],i)=>{
-    const id=`${tx}:${tz}:${i}`,template=coinTemplates.get(name);if(!template||collectedCoins.has(id))return;
-    const spot=findSpot(.35,TILE-3,false,coinRandom);if(!spot)return;
-    const coin=template.clone(true);coin.scale.setScalar(.02);coin.position.set(spot[0],.12,spot[1]);coin.userData={coinId:id,value,baseY:.12,baseScale:1.35,spawnTime:0,phase:coinRandom()*Math.PI*2,collecting:false,collectTime:0};props.add(coin);tile.userData.coins.push(coin);reserve(spot[0],spot[1],.35);
+    const id=`${tx}:${tz}:${i}`,template=coinTemplates.get(name),respawn=coinRespawns.get(id);if(!template)return;
+    if(collectedCoins.has(id)&&(!respawn||performance.now()<respawn.readyAt))return;
+    const placementRandom=respawn?rng(hash(tx+i*101,tz-i*137)^coinLayoutSeed^Math.imul(respawn.cycle,83492791)):coinRandom,spot=findSpot(.35,TILE-3,false,placementRandom);if(!spot)return;
+    if(respawn){collectedCoins.delete(id);coinRespawns.delete(id);}
+    const coin=template.clone(true);coin.scale.setScalar(.02);coin.position.set(spot[0],.12,spot[1]);coin.userData={coinId:id,value,baseY:.12,baseScale:1.35,spawnTime:0,phase:placementRandom()*Math.PI*2,collecting:false,collectTime:0,collected:false,worldTX:tx,worldTZ:tz,respawnCycle:respawn?.cycle||0};props.add(coin);tile.userData.coins.push(coin);reserve(spot[0],spot[1],.35);
   });
 }
 
@@ -215,11 +219,53 @@ function refreshBossArenas(){
       const angle=i/30*Math.PI*2,entryDelta=Math.abs(Math.atan2(Math.sin(angle-arena.entryAngle),Math.cos(angle-arena.entryAngle))),oppositeDelta=Math.abs(Math.PI-entryDelta);
       if(entryDelta<.25||oppositeDelta<.25||!availableTrees.length)continue;
       const [name,baseScale]=availableTrees[Math.floor(random()*availableTrees.length)],scale=baseScale*(.82+random()*.3),x=arena.x+Math.sin(angle)*BOSS_ARENA_RING_RADIUS,z=arena.z+Math.cos(angle)*BOSS_ARENA_RING_RADIUS,tree=decorTemplates.get(name).clone(true);
-      tree.scale.setScalar(scale);tree.position.set(x,0,z);tree.rotation.y=random()*Math.PI*2;bossArenaGroup.add(tree);obstacleColliders.push({type:'circle',x,z,radius:scale*.25,top:99,bossArena:true});
+      tree.scale.setScalar(scale);tree.position.set(x,0,z);tree.rotation.y=random()*Math.PI*2;tree.userData.cameraFadeTree=true;bossArenaGroup.add(tree);obstacleColliders.push({type:'circle',x,z,radius:scale*.25,top:99,bossArena:true});
     }
   });
   animals.filter(animal=>!animal.userData.boss&&!animal.userData.dead&&!animalInActiveBattle(animal)&&huntPrompt?.target!==animal&&arenas.some(arena=>Math.hypot(animal.position.x-arena.x,animal.position.z-arena.z)<BOSS_ARENA_CLEAR_RADIUS)).forEach(animal=>{animal.userData.spawnCycle++;placeAnimal(animal,true);});
   npcs.forEach((npc,index)=>{if(arenas.some(arena=>Math.hypot(npc.position.x-arena.x,npc.position.z-arena.z)<BOSS_ARENA_CLEAR_RADIUS))placeNpc(npc,index,true);});
+}
+
+const treeOcclusionRaycaster=new THREE.Raycaster(),treeOcclusionDirection=new THREE.Vector3(),treeOcclusionPoint=new THREE.Vector3();
+let treeOcclusionElapsed=0,cameraOccludedTrees=new Set();
+
+function visibleCameraFadeTrees(){
+  const trees=[];tiles.forEach(tile=>tile.userData.props.children.forEach(prop=>{if(prop.visible&&prop.userData.cameraFadeTree)trees.push(prop);}));
+  bossArenaGroup.children.forEach(tree=>{if(tree.visible&&tree.userData.cameraFadeTree)trees.push(tree);});return trees;
+}
+
+function cameraFadeTreeRoot(object){
+  while(object&&!object.userData.cameraFadeTree)object=object.parent;return object?.userData.cameraFadeTree?object:null;
+}
+
+function prepareCameraFadeTree(tree){
+  if(tree.userData.cameraFadeMaterials)return;
+  const entries=[];tree.traverse(object=>{
+    if(!object.isMesh||!object.material)return;
+    const materials=(Array.isArray(object.material)?object.material:[object.material]).map(material=>material.clone());object.material=Array.isArray(object.material)?materials:materials[0];
+    materials.forEach(material=>entries.push({material,baseOpacity:material.opacity,transparent:material.transparent,depthWrite:material.depthWrite}));
+  });
+  tree.userData.cameraFadeMaterials=entries;tree.userData.cameraFadeOpacity=1;
+}
+
+function setCameraTreeFade(tree,targetOpacity,dt){
+  const current=tree.userData.cameraFadeOpacity??1;if(targetOpacity>=.999&&current>=.999)return;
+  prepareCameraFadeTree(tree);let opacity=THREE.MathUtils.damp(tree.userData.cameraFadeOpacity,targetOpacity,targetOpacity<1?11:7,dt);if(Math.abs(opacity-targetOpacity)<.004)opacity=targetOpacity;tree.userData.cameraFadeOpacity=opacity;
+  tree.userData.cameraFadeMaterials.forEach(entry=>{const transparent=entry.transparent||opacity<.999,depthWrite=opacity>=.999?entry.depthWrite:false;entry.material.opacity=entry.baseOpacity*opacity;if(entry.material.transparent!==transparent||entry.material.depthWrite!==depthWrite){entry.material.transparent=transparent;entry.material.depthWrite=depthWrite;entry.material.needsUpdate=true;}});
+}
+
+function updateTreeCameraOcclusion(dt){
+  const trees=visibleCameraFadeTrees();treeOcclusionElapsed+=dt;
+  if(treeOcclusionElapsed>=.1){
+    treeOcclusionElapsed=0;const occluded=new Set(),targets=[hero,...followers.filter(animal=>!animal.userData.dead)];
+    targets.forEach(target=>{
+      treeOcclusionPoint.set(target.position.x,target.position.y+(target===hero?1:.62),target.position.z);treeOcclusionDirection.subVectors(treeOcclusionPoint,camera.position);const distance=treeOcclusionDirection.length();if(distance<.5)return;
+      treeOcclusionRaycaster.set(camera.position,treeOcclusionDirection.multiplyScalar(1/distance));treeOcclusionRaycaster.near=.2;treeOcclusionRaycaster.far=Math.max(.2,distance-.28);
+      treeOcclusionRaycaster.intersectObjects(trees,true).forEach(hit=>{const root=cameraFadeTreeRoot(hit.object);if(root)occluded.add(root);});
+    });
+    cameraOccludedTrees=occluded;
+  }
+  trees.forEach(tree=>setCameraTreeFade(tree,cameraOccludedTrees.has(tree)?.25:1,dt));
 }
 
 function arrangeTiles(force=false){
@@ -246,6 +292,7 @@ const heroRig=[];
 let heroModel=null;
 let remoteCharacterTemplate=null,multiplayerSocket=null,localPlayerId='',currentRoom='',lastNetworkSend=0,lastPlayerCardUpdate=0,localDisplayName='小森',worldTimeOffset=0;
 let reconnectRoom='',reconnectName='',reconnectTimer=null,reconnectAttempts=0,intentionalDisconnect=false,networkAssetsReady=false,lastLatencyPing=0,networkLatencyMs=0;
+let analyticsGameStarted=false,analyticsSessionStartedAt=0,analyticsHeartbeatTimer=null,analyticsSessionEnded=false;
 const remotePlayers=new Map(),pendingRemotePlayers=new Map();
 const sharedBossStates=new Map();
 const sharedBossTransforms=new Map();
@@ -476,12 +523,28 @@ function scheduleReconnect(){
 }
 
 function leaveRoom(showMessage=true){
+  const wasConnected=Boolean(currentRoom),roomSize=Math.min(4,remotePlayers.size+1);
   intentionalDisconnect=true;clearTimeout(reconnectTimer);reconnectTimer=null;reconnectRoom='';reconnectName='';reconnectAttempts=0;
   if(multiplayerSocket){multiplayerSocket.onclose=null;multiplayerSocket.close();multiplayerSocket=null;}clearRemoteRoomView();hideRoomRecovery();
+  if(wasConnected)trackGameEvent('room left',{room_size:roomSize});
   if(showMessage)setCoopStatus('已離開房間，現在是單人漫遊。');
 }
 
-function startGame(){requestMusicPlayback();localDisplayName=document.querySelector('#playerName').value.trim()||'小森';started=true;document.querySelector('#intro').classList.add('hidden');document.querySelector('#hint').classList.remove('faded');updateOnlinePlayerCard(true);}
+function analyticsSessionProperties(){
+  return {duration_seconds:analyticsSessionStartedAt?Math.max(0,Math.round((Date.now()-analyticsSessionStartedAt)/1000)):0,multiplayer:Boolean(currentRoom),room_size:currentRoom?Math.min(4,remotePlayers.size+1):1,companion_count:followers.filter(animal=>!animal.userData.dead).length};
+}
+
+function sendAnalyticsHeartbeat(){if(!analyticsSessionStartedAt||analyticsSessionEnded)return;trackGameEvent('session heartbeat',analyticsSessionProperties());}
+
+function startAnalyticsSession(){
+  if(analyticsSessionStartedAt)return;analyticsSessionStartedAt=Date.now();analyticsSessionEnded=false;sendAnalyticsHeartbeat();analyticsHeartbeatTimer=setInterval(sendAnalyticsHeartbeat,60000);
+}
+
+function endAnalyticsSession(){
+  if(!analyticsSessionStartedAt||analyticsSessionEnded)return;analyticsSessionEnded=true;if(analyticsHeartbeatTimer){clearInterval(analyticsHeartbeatTimer);analyticsHeartbeatTimer=null;}trackGameEvent('game ended',analyticsSessionProperties(),{send_instantly:true,transport:'sendBeacon'});
+}
+
+function startGame(){requestMusicPlayback();localDisplayName=document.querySelector('#playerName').value.trim()||'小森';started=true;document.querySelector('#intro').classList.add('hidden');document.querySelector('#hint').classList.remove('faded');updateOnlinePlayerCard(true);if(!analyticsGameStarted){analyticsGameStarted=true;trackGameEvent('game started',{mode:currentRoom?'multiplayer':'single_player',companion_count:followers.filter(animal=>!animal.userData.dead).length});startAnalyticsSession();}}
 
 function connectToRoom(room,name,create=false,reconnecting=false){
   if(multiplayerSocket){multiplayerSocket.onclose=null;multiplayerSocket.close();multiplayerSocket=null;}const code=room.toUpperCase().replace(/[^A-Z0-9]/g,'').slice(0,6);
@@ -492,7 +555,7 @@ function connectToRoom(room,name,create=false,reconnecting=false){
   socket.onopen=()=>socket.send(JSON.stringify({type:'join',room:code,name:name||'旅人',create:create&&!reconnecting,worldTime:clock.elapsedTime+worldTimeOffset}));
   socket.onmessage=event=>{
     let message;try{message=JSON.parse(event.data);}catch{return;}
-    if(message.type==='welcome'){localPlayerId=message.id;currentRoom=message.room;reconnectAttempts=0;hideRoomRecovery();document.querySelectorAll('.coop-panel button').forEach(button=>button.disabled=false);applyWorldSnapshot(message);updateRoomHud();setCoopStatus(`已加入房間 ${currentRoom}`);startGame();notifyMultiplayerReady();if(reconnecting)showBattleMessage(`已重新連接房間 ${currentRoom}`,2.2);}
+    if(message.type==='welcome'){localPlayerId=message.id;currentRoom=message.room;reconnectAttempts=0;hideRoomRecovery();document.querySelectorAll('.coop-panel button').forEach(button=>button.disabled=false);applyWorldSnapshot(message);updateRoomHud();setCoopStatus(`已加入房間 ${currentRoom}`);startGame();trackGameEvent('room joined',{room_size:Math.min(4,(message.players?.length||0)+1),created:Boolean(create&&!reconnecting),reconnected:Boolean(reconnecting)});notifyMultiplayerReady();if(reconnecting)showBattleMessage(`已重新連接房間 ${currentRoom}`,2.2);}
     else if(message.type==='world_sync'){applyWorldSnapshot(message);updateRoomHud();}
     else if(message.type==='player_joined')addRemotePlayer(message.player);
     else if(message.type==='player_left')removeRemotePlayer(message.id);
@@ -568,7 +631,7 @@ const animalRespawns=[];
 const bossRegions=new Map(),BOSS_REGION_SIZE=TILE*4;
 let merchant=null,doctor=null,doctorState=null,purchaseState=null,huntPrompt=null,battle=null,battleActionState=null,potionCount=Math.max(0,Math.floor(Number(pendingLocalSave?.potions)||0)),doctorPotionStock=4,doctorPotionRestockTimer=0;
 let localSaveRestored=false,localSaveElapsed=0,lastLocalSaveJson='';
-const DOCTOR_POTION_MAX_STOCK=4,DOCTOR_POTION_PRICE=30,DOCTOR_POTION_RESTOCK_TIME=38;
+const DOCTOR_POTION_MAX_STOCK=4,DOCTOR_POTION_PRICE=15,DOCTOR_HEAL_ALL_PRICE=10,DOCTOR_REVIVE_PRICE=200,DOCTOR_UPGRADE_PRICE=100,DOCTOR_POTION_RESTOCK_TIME=38;
 
 function initializeAnimalStats(animal,wild=false){
   const base=animalBaseStats[animal.userData.species]||{hp:45,attack:10,defense:4,speed:6.5};
@@ -938,6 +1001,7 @@ buyButton.addEventListener('click',()=>{
   coinBalance-=animal.userData.price;document.querySelector('#coinCount').textContent=coinBalance;
   animal.userData.shopAnimal=false;animal.userData.following=true;animal.userData.phase=Math.random()*Math.PI*2;animal.userData.walkWeight=0;animal.userData.verticalVelocity=0;animal.userData.grounded=true;animal.userData.jumpCooldown=0;animal.position.y=0;followers.push(animal);
   slot.animal=null;slot.restockTimer=12+Math.random()*10;
+  trackGameEvent('animal purchased',{species:animal.userData.species,price:animal.userData.price,coin_balance:coinBalance,companion_count:followers.filter(follower=>!follower.userData.dead).length});
   purchaseState={slot:null,anchor:merchant,thanksTimer:2.8};shopBubble.dataset.speaker='森林商人';shopText.textContent='謝謝你！請好好照顧牠。新的動物過一段時間才會來。';shopActions.style.display='none';
 });
 
@@ -955,7 +1019,7 @@ function setPotionCount(value,pulse=false){
 function buyDoctorPotion(){
   if(doctorPotionStock<=0)return showDoctorResult(`藥水暫時售罄了。下一瓶大約 ${Math.max(1,Math.ceil(doctorPotionRestockTimer))} 秒後調配完成。`);
   if(coinBalance<DOCTOR_POTION_PRICE)return showDoctorResult(`一瓶藥水需要 ${DOCTOR_POTION_PRICE} 枚金幣，你現在還不夠。`);
-  setCoinBalance(coinBalance-DOCTOR_POTION_PRICE);setPotionCount(potionCount+1,true);doctorPotionStock--;if(doctorPotionStock<DOCTOR_POTION_MAX_STOCK&&doctorPotionRestockTimer<=0)doctorPotionRestockTimer=DOCTOR_POTION_RESTOCK_TIME;showDoctorResult(`這是你的回血藥水。現在還有 ${doctorPotionStock} 瓶存貨。`);
+  setCoinBalance(coinBalance-DOCTOR_POTION_PRICE);setPotionCount(potionCount+1,true);doctorPotionStock--;if(doctorPotionStock<DOCTOR_POTION_MAX_STOCK&&doctorPotionRestockTimer<=0)doctorPotionRestockTimer=DOCTOR_POTION_RESTOCK_TIME;trackGameEvent('doctor service used',{service:'potion',price:DOCTOR_POTION_PRICE,coin_balance:coinBalance});showDoctorResult(`這是你的回血藥水。現在還有 ${doctorPotionStock} 瓶存貨。`);
 }
 
 function doctorButton(label,handler,disabled=false){
@@ -974,13 +1038,13 @@ function showDoctorMenu(){
   doctorText.textContent='旅途中受傷了嗎？我可以照顧你的動物。';
   doctorActions.replaceChildren(
     doctorButton(`回血藥水 $${DOCTOR_POTION_PRICE} · 存貨 ${doctorPotionStock}`,buyDoctorPotion),
-    doctorButton('全部治療 $20',()=>{
+    doctorButton(`全部治療 $${DOCTOR_HEAL_ALL_PRICE}`,()=>{
       const companions=followers.filter(animal=>!animal.userData.dead),patients=companions.filter(animal=>animal.userData.hp<animal.userData.maxHp-.01);if(!companions.length)return showDoctorResult('你現在沒有隨行動物。');if(!patients.length)return showDoctorResult('大家都很健康，現在不需要治療。');
-      if(coinBalance<20)return showDoctorResult('你的金幣不足 20 枚。');
-      setCoinBalance(coinBalance-20);companions.forEach(animal=>{animal.userData.hp=animal.userData.maxHp;animal.userData.restingForRecovery=false;});showDoctorResult('治療完成了。大家現在都恢復精神了。');
+      if(coinBalance<DOCTOR_HEAL_ALL_PRICE)return showDoctorResult(`你的金幣不足 ${DOCTOR_HEAL_ALL_PRICE} 枚。`);
+      setCoinBalance(coinBalance-DOCTOR_HEAL_ALL_PRICE);companions.forEach(animal=>{animal.userData.hp=animal.userData.maxHp;animal.userData.restingForRecovery=false;});trackGameEvent('doctor service used',{service:'heal_all',price:DOCTOR_HEAL_ALL_PRICE,animal_count:companions.length,coin_balance:coinBalance});showDoctorResult('治療完成了。大家現在都恢復精神了。');
     }),
-    doctorButton('復活一隻 $150',showReviveChoices,!fallenFollowers.length),
-    doctorButton('升級一隻 $500',showUpgradeChoices,!followers.some(animal=>!animal.userData.dead)),
+    doctorButton(`復活一隻 $${DOCTOR_REVIVE_PRICE}`,showReviveChoices,!fallenFollowers.length),
+    doctorButton(`升級一隻 $${DOCTOR_UPGRADE_PRICE}`,showUpgradeChoices,!followers.some(animal=>!animal.userData.dead)),
     doctorButton('離開',closeDoctor)
   );
   doctorBubble.classList.remove('hidden');
@@ -995,10 +1059,10 @@ function showReviveChoices(){
 
 function reviveFollower(animal){
   if(!fallenFollowers.includes(animal))return showDoctorResult('這隻動物已經不在復活名單中。');
-  if(coinBalance<150)return showDoctorResult('復活需要 150 枚金幣，你現在還不夠。');
-  setCoinBalance(coinBalance-150);fallenFollowers.splice(fallenFollowers.indexOf(animal),1);animal.userData.dead=false;animal.userData.deathTime=0;animal.userData.hp=animal.userData.maxHp;animal.userData.following=true;animal.userData.restingForRecovery=false;animal.userData.exhausted=false;animal.userData.grounded=true;animal.userData.verticalVelocity=0;animal.userData.walkWeight=0;animal.quaternion.identity();animateAnimalFeet(animal,0,0);
+  if(coinBalance<DOCTOR_REVIVE_PRICE)return showDoctorResult(`復活需要 ${DOCTOR_REVIVE_PRICE} 枚金幣，你現在還不夠。`);
+  setCoinBalance(coinBalance-DOCTOR_REVIVE_PRICE);fallenFollowers.splice(fallenFollowers.indexOf(animal),1);animal.userData.dead=false;animal.userData.deathTime=0;animal.userData.hp=animal.userData.maxHp;animal.userData.following=true;animal.userData.restingForRecovery=false;animal.userData.exhausted=false;animal.userData.grounded=true;animal.userData.verticalVelocity=0;animal.userData.walkWeight=0;animal.quaternion.identity();animateAnimalFeet(animal,0,0);
   let x=doctor.position.x+1.5,z=doctor.position.z+1.4;for(let attempt=0;attempt<10&&!entitySpotIsFree(x,z,.62,animal);attempt++){const angle=attempt*.8;x=doctor.position.x+Math.cos(angle)*(1.8+attempt*.2);z=doctor.position.z+Math.sin(angle)*(1.8+attempt*.2);}
-  animal.position.set(x,0,z);animal.scale.setScalar(animal.userData.baseScale*.015);animal.userData.teleport={phase:'in',time:0,x,z};scene.add(animal);followers.push(animal);showDoctorResult(`${animal.userData.displayName}醒過來了。請繼續好好照顧牠。`);
+  animal.position.set(x,0,z);animal.scale.setScalar(animal.userData.baseScale*.015);animal.userData.teleport={phase:'in',time:0,x,z};scene.add(animal);followers.push(animal);trackGameEvent('doctor service used',{service:'revive',price:DOCTOR_REVIVE_PRICE,species:animal.userData.species,level:animal.userData.level,coin_balance:coinBalance});showDoctorResult(`${animal.userData.displayName}醒過來了。請繼續好好照顧牠。`);
 }
 
 function showUpgradeChoices(){
@@ -1009,9 +1073,9 @@ function showUpgradeChoices(){
 
 function doctorUpgrade(animal){
   if(!followers.includes(animal)||animal.userData.dead)return showDoctorResult('這隻動物目前無法接受訓練。');
-  if(coinBalance<500)return showDoctorResult('升級需要 500 枚金幣，你現在還不夠。');
-  setCoinBalance(coinBalance-500);animal.userData.level++;animal.userData.maxHp+=8;animal.userData.hp=Math.min(animal.userData.maxHp,animal.userData.hp+8);animal.userData.attack+=2;animal.userData.defense+=1;animal.userData.combatSpeed+=.15;
-  refreshWildAnimalLevels();const special=(animalVoices[animal.userData.species]||['嗷嗚——！','嗚——！'])[1];emitAnimalSound(animal,`✦ ${special}——！ ${special} ✦`,2.7);showDoctorResult(`${animal.userData.displayName}完成訓練了，看起來比之前更可靠。`);
+  if(coinBalance<DOCTOR_UPGRADE_PRICE)return showDoctorResult(`升級需要 ${DOCTOR_UPGRADE_PRICE} 枚金幣，你現在還不夠。`);
+  setCoinBalance(coinBalance-DOCTOR_UPGRADE_PRICE);animal.userData.level++;animal.userData.maxHp+=8;animal.userData.hp=Math.min(animal.userData.maxHp,animal.userData.hp+8);animal.userData.attack+=2;animal.userData.defense+=1;animal.userData.combatSpeed+=.15;
+  refreshWildAnimalLevels();trackGameEvent('doctor service used',{service:'upgrade',price:DOCTOR_UPGRADE_PRICE,species:animal.userData.species,new_level:animal.userData.level,coin_balance:coinBalance});const special=(animalVoices[animal.userData.species]||['嗷嗚——！','嗚——！'])[1];emitAnimalSound(animal,`✦ ${special}——！ ${special} ✦`,2.7);showDoctorResult(`${animal.userData.displayName}完成訓練了，看起來比之前更可靠。`);
 }
 
 const huntBubble=document.createElement('div'),huntText=document.createElement('div'),huntActions=document.createElement('div'),huntYes=document.createElement('button'),huntNo=document.createElement('button');
@@ -1063,7 +1127,15 @@ function openHuntPrompt(animal){
   huntPrompt={target:animal};moving=false;marker.visible=false;animal.userData.motion.walking=false;
   huntBubble.dataset.speaker=animal.userData.boss?'地區首領':'狩獵';
   huntText.textContent=animal.userData.boss?`${animal.userData.displayName}散發著危險的氣息。要讓你的動物挑戰牠嗎？`: `要讓你的動物狩獵這隻 ${animal.userData.displayName} 嗎？戰鬥可能令動物受傷或死亡。`;
-  huntActions.style.display='flex';huntBubble.classList.remove('hidden');
+  huntYes.textContent='是，開始戰鬥';huntNo.textContent='不要';huntActions.replaceChildren(huntYes,huntNo);huntActions.style.display='flex';huntBubble.classList.remove('hidden');
+}
+
+function showBattleStarterChoices(){
+  const enemy=huntPrompt?.target;if(!enemy||enemy.userData.dead)return closeHuntPrompt();
+  const candidates=followers.filter(animal=>!animal.userData.dead&&animal.userData.hp/animal.userData.maxHp>=.25);
+  if(!candidates.length){huntText.textContent='你的動物目前太虛弱了。先讓牠停下來休息回血吧。';huntNo.textContent='離開';huntActions.replaceChildren(huntNo);return;}
+  huntText.textContent=`要派哪一隻動物迎戰 ${enemy.userData.displayName}？`;
+  huntNo.textContent='返回';huntActions.replaceChildren(...candidates.map(animal=>doctorButton(`${animal.userData.displayName} · Lv.${animal.userData.level}`,()=>startBattle(animal))),huntNo);
 }
 
 function gainExperience(animal,amount){
@@ -1083,27 +1155,6 @@ function gainExperience(animal,amount){
 
 function showBattleMessage(message,duration=1.8){
   battleBanner.textContent=message;battleBanner.dataset.timer=duration;battleBanner.classList.remove('hidden');
-}
-
-function selectBattleAllies(candidates){
-  // Ordinary hunts still favour one-on-one fights, but companions now have a
-  // noticeably better chance of joining together: 65% solo, 27% duo, 8% trio.
-  const roll=Math.random(),count=Math.min(candidates.length,roll<.65?1:roll<.92?2:3),pool=[...candidates],selected=[];
-  while(selected.length<count&&pool.length){
-    const weights=pool.map(animal=>{
-      const personality=animalPersonalityDefs[animal.userData.personality]||animalPersonalityDefs.steady,health=THREE.MathUtils.clamp(animal.userData.hp/animal.userData.maxHp,0,1);
-      return Math.max(.002,personality.willingness*Math.pow(health,2.35)*(1-(animal.userData.fatigue||0)*.4)*animalAffinityEffect(animal).power);
-    });
-    const total=weights.reduce((sum,value)=>sum+value,0);let pick=Math.random()*total,index=0;
-    for(;index<weights.length-1;index++){pick-=weights[index];if(pick<=0)break;}
-    selected.push(pool.splice(index,1)[0]);
-  }
-  return selected;
-}
-
-function battleWillingness(animal){
-  const personality=animalPersonalityDefs[animal.userData.personality]||animalPersonalityDefs.steady,health=THREE.MathUtils.clamp(animal.userData.hp/animal.userData.maxHp,0,1);
-  return personality.willingness*Math.pow(health,2.35)*(1-(animal.userData.fatigue||0)*.4)*animalAffinityEffect(animal).power;
 }
 
 function createCombatState(index=0){
@@ -1167,11 +1218,18 @@ function usePotionOnAnimal(animal,context){
   const sounds=animalVoices[animal.userData.species]||['嗚嗚……'];emitAnimalSound(animal,`♡ ${sounds[1]||sounds[0]} ♡`,2.05);closeBattleAction();
 }
 
-function switchBattleAnimal(){
+function showBattleSwapChoices(){
+  if(!battle)return closeBattleAction();const reserves=battleReserves();
+  battleActionState={mode:'swap',context:'battle'};battleActionBubble.dataset.speaker=localDisplayName;
+  if(!reserves.length){battleActionText.textContent='現在沒有其他動物可以換手。';showHeroActionButtons(doctorButton('返回',openBattleAction),closeActionButton);return;}
+  battleActionText.textContent='要換哪一隻動物上場？';
+  showHeroActionButtons(...reserves.map(animal=>doctorButton(`${animal.userData.displayName} · Lv.${animal.userData.level}`,()=>switchBattleAnimal(animal))),doctorButton('返回',openBattleAction),closeActionButton);
+}
+
+function switchBattleAnimal(incoming){
   if(!battle)return closeBattleAction();
-  const incoming=battleReserves().sort((a,b)=>battleWillingness(b)-battleWillingness(a))[0];
-  if(!incoming){battleActionText.textContent='現在沒有其他動物可以換手。';battleActionButtons.style.display='none';battleActionState={mode:'message',timer:1.8};return;}
-  const outgoing=[...battle.allies].filter(a=>!a.userData.dead).sort((a,b)=>battleWillingness(a)-battleWillingness(b))[0];
+  if(!incoming||!battleReserves().includes(incoming))return showBattleSwapChoices();
+  const outgoing=battle.allies.find(animal=>!animal.userData.dead);
   if(!outgoing)return closeBattleAction();
   resetCombatRollPose(outgoing);const index=battle.allies.indexOf(outgoing),position=outgoing.position.clone(),retreat=safeFollowerRetreatSpot(Math.max(0,followers.indexOf(outgoing)));
   outgoing.userData.exhausted=false;outgoing.userData.returningFromBattle=true;startFollowerTeleport(outgoing,retreat.x,retreat.z);
@@ -1184,6 +1242,7 @@ function switchBattleAnimal(){
 function escapeBattle(teleportFollowers=true,announce=true){
   if(!battle)return;
   const escaping=battle.allies.filter(animal=>!animal.userData.dead),enemy=battle.enemy;
+  trackGameEvent('battle finished',{result:'escaped',enemy_species:enemy.userData.species,enemy_level:enemy.userData.level||1,is_boss:Boolean(enemy.userData.boss),multiplayer:Boolean(currentRoom),ally_count:battle.allies.length,duration_seconds:Math.round(battle.elapsed*10)/10});
   [...escaping,enemy].filter(animal=>!animal.userData.dead).forEach(animal=>{resetCombatRollPose(animal);animal.userData.exhausted=false;});
   if(!enemy.userData.dead){resetAnimalMotion(enemy);if(enemy.userData.motion)enemy.userData.motion.wait=2.5;}
   battle=null;closeBattleAction();
@@ -1196,16 +1255,17 @@ cheerButton.addEventListener('click',()=>{
   const cheers=['大家加油！我一直都在這裡！','不要怕，照自己的步調來！','做得很好！再堅持一下！','相信自己，我們一起回去！'];
   battleActionText.textContent=cheers[Math.floor(Math.random()*cheers.length)];battleActionButtons.style.display='none';battleActionState={mode:'message',timer:2.2};
 });
-swapButton.addEventListener('click',switchBattleAnimal);
+swapButton.addEventListener('click',showBattleSwapChoices);
 potionButton.addEventListener('click',showPotionChoices);
 escapeButton.addEventListener('click',()=>escapeBattle(true,true));
 closeActionButton.addEventListener('click',closeBattleAction);
 
-function startBattle(){
+function startBattle(selectedAlly=null){
   const enemy=huntPrompt?.target;if(!enemy||enemy.userData.dead)return closeHuntPrompt();
   if(!enemy.userData.boss&&!enemy.userData.sharedEncounterId)setWildAnimalLevel(enemy);const livingFollowers=followers.filter(a=>!a.userData.dead),candidates=enemy.userData.boss?livingFollowers:livingFollowers.filter(a=>a.userData.hp/a.userData.maxHp>=.25);
   if(!candidates.length){huntText.textContent='你的動物目前太虛弱了。先讓牠停下來休息回血吧。';huntActions.style.display='none';return;}
-  const allies=enemy.userData.boss?[...candidates]:selectBattleAllies(candidates);
+  if(!enemy.userData.boss&&!candidates.includes(selectedAlly))return showBattleStarterChoices();
+  const allies=enemy.userData.boss?[...candidates]:[selectedAlly];
   if(currentRoom&&!enemy.userData.boss&&multiplayerSocket?.readyState===WebSocket.OPEN){
     enemy.userData.sharedEncounterId||=`${enemy.userData.species}:${Math.round(enemy.position.x*2)}:${Math.round(enemy.position.z*2)}`;
     enemy.userData.sharedControllerId||=localPlayerId;
@@ -1217,11 +1277,12 @@ function startBattle(){
   combatants.forEach((animal,index)=>states.set(animal,createCombatState(index)));
   enemy.userData.motion.walking=false;allies.forEach(a=>{cancelFollowerTeleport(a);a.userData.restingForRecovery=false;a.userData.isWalking=false;});
   battle={enemy,allies,states,startingHp:new Map(allies.map(animal=>[animal,animal.userData.hp])),elapsed:0,ending:0};
+  trackGameEvent('battle started',{enemy_species:enemy.userData.species,enemy_level:enemy.userData.level||1,is_boss:Boolean(enemy.userData.boss),multiplayer:Boolean(currentRoom),ally_count:allies.length,ally_species:allies.map(animal=>animal.userData.species)});
   showBattleMessage(`${allies.map(a=>a.userData.displayName).join('、')} VS ${enemy.userData.displayName}`,2.2);
 }
 
 huntNo.addEventListener('click',closeHuntPrompt);
-huntYes.addEventListener('click',startBattle);
+huntYes.addEventListener('click',()=>{if(huntPrompt?.target?.userData.boss)startBattle();else showBattleStarterChoices();});
 
 function moveCombatAnimal(animal,dirX,dirZ,distance,footY=animal.position.y){
   if(!Number.isFinite(dirX)||!Number.isFinite(dirZ))return false;
@@ -1337,6 +1398,8 @@ function killAnimal(animal,broadcastShared=true){
 
 function finishBattle(playerWon){
   if(!battle||battle.ending)return;
+  trackGameEvent('battle finished',{result:playerWon?'win':'loss',enemy_species:battle.enemy.userData.species,enemy_level:battle.enemy.userData.level||1,is_boss:Boolean(battle.enemy.userData.boss),multiplayer:Boolean(currentRoom),ally_count:battle.allies.length,duration_seconds:Math.round(battle.elapsed*10)/10});
+  if(playerWon&&battle.enemy.userData.boss)trackGameEvent('boss defeated',{species:battle.enemy.userData.species,level:battle.enemy.userData.level||1,multiplayer:Boolean(currentRoom),ally_count:battle.allies.length});
   battle.ending=1.8;[...battle.allies,battle.enemy].filter(a=>!a.userData.dead).forEach(resetCombatRollPose);
   if(playerWon){
     const enemyLevel=Math.max(1,battle.enemy.userData.level||1),survivors=battle.allies.filter(a=>!a.userData.dead),reward=battle.enemy.userData.boss?80+enemyLevel*25:10+enemyLevel*10,coinReward=battle.enemy.userData.boss?120+enemyLevel*10:6+enemyLevel*4,startTotal=battle.allies.reduce((sum,a)=>sum+(battle.startingHp.get(a)||a.userData.maxHp),0),remainingTotal=survivors.reduce((sum,a)=>sum+a.userData.hp,0),averageHealth=survivors.reduce((sum,a)=>sum+a.userData.hp/a.userData.maxHp,0)/Math.max(1,survivors.length),retained=remainingTotal/Math.max(1,startTotal);
@@ -1770,10 +1833,26 @@ function pulseWallet(){
 }
 wallet.addEventListener('animationend',()=>wallet.classList.remove('coin-pulse'));
 
+function respawnCollectedCoin(coin){
+  const data=coin.userData,respawn=coinRespawns.get(data.coinId);if(!respawn||performance.now()<respawn.readyAt)return false;
+  const tile=tiles.find(candidate=>candidate.userData.worldTX===data.worldTX&&candidate.userData.worldTZ===data.worldTZ);if(!tile)return false;
+  const random=rng(hash(data.worldTX+respawn.cycle*149,data.worldTZ-respawn.cycle*211)^coinLayoutSeed),originReservations=data.worldTX===0&&data.worldTZ===0?[{...ORIGIN_LAYOUT.tent,radius:4.2},{...ORIGIN_LAYOUT.merchant,radius:4.2},{...ORIGIN_LAYOUT.doctor,radius:2.4},{x:0,z:0,radius:2.2}]:[];
+  let localX=0,localZ=0,found=false;
+  for(let attempt=0;attempt<36;attempt++){
+    localX=(random()-.5)*(TILE-3);localZ=(random()-.5)*(TILE-3);const worldX=data.worldTX*TILE+localX,worldZ=data.worldTZ*TILE+localZ;
+    if(originReservations.some(area=>Math.hypot(localX-area.x,localZ-area.z)<area.radius+.35))continue;
+    if(Math.hypot(worldX-hero.position.x,worldZ-hero.position.z)<2.5||!entitySpotIsFree(worldX,worldZ,.35))continue;
+    if(activeCoins.some(other=>other!==coin&&!other.userData.collected&&other.userData.worldTX===data.worldTX&&other.userData.worldTZ===data.worldTZ&&Math.hypot(localX-other.position.x,localZ-other.position.z)<1.1))continue;
+    found=true;break;
+  }
+  if(!found)return false;
+  coin.position.set(localX,.12,localZ);coin.rotation.set(0,0,0);coin.scale.setScalar(.02);coin.visible=true;data.baseY=.12;data.spawnTime=0;data.phase=random()*Math.PI*2;data.collecting=false;data.collectTime=0;data.collected=false;data.respawnCycle=respawn.cycle;tile.userData.props.add(coin);collectedCoins.delete(data.coinId);coinRespawns.delete(data.coinId);return true;
+}
+
 function updateCoins(dt,t){
   const worldPosition=new THREE.Vector3();
   activeCoins.forEach(coin=>{
-    if(coin.userData.collected)return;
+    if(coin.userData.collected){respawnCollectedCoin(coin);return;}
     if(coin.userData.collecting){
       coin.userData.collectTime+=dt;const progress=Math.min(coin.userData.collectTime/.78,1),ease=1-Math.pow(1-progress,3);
       coin.rotation.y+=dt*(12+progress*12);coin.rotation.z+=dt*5;
@@ -1791,7 +1870,9 @@ function updateCoins(dt,t){
     if(horizontal<.9&&Math.abs(worldPosition.y-hero.position.y)<1.25){
       coin.userData.collecting=true;coin.userData.collectTime=0;coin.userData.collectStartY=coin.position.y;coin.userData.collectStartScale=coin.scale.x;
       collectedCoins.add(coin.userData.coinId);
+      const cycle=(coin.userData.respawnCycle||0)+1,delay=COIN_RESPAWN_MIN_MS+Math.random()*(COIN_RESPAWN_MAX_MS-COIN_RESPAWN_MIN_MS);coinRespawns.set(coin.userData.coinId,{readyAt:performance.now()+delay,cycle});
       setCoinBalance(coinBalance+coin.userData.value,true);
+      trackGameEvent('coin collected',{coin_value:coin.userData.value,coin_balance:coinBalance,multiplayer:Boolean(currentRoom)});
     }
   });
 }
@@ -1929,6 +2010,7 @@ function animate(){
   shadow.material.opacity=.35*Math.max(.25,1-(hero.position.y-shadowY)/4);
   recycleDistantAnimals();
   const desired=new THREE.Vector3(hero.position.x+12,hero.position.y+11,hero.position.z+16);camera.position.lerp(desired,1-Math.pow(.001,dt));camera.lookAt(hero.position.x,hero.position.y+1.8,hero.position.z);
+  updateTreeCameraOcclusion(dt);
   updateConversation(dt);updateAnimalOverlays(dt);
   updateOnlinePlayerCard(false,t);
   localSaveElapsed+=dt;if(localSaveElapsed>=1.5){localSaveElapsed=0;saveLocalGame();}
@@ -1977,4 +2059,4 @@ async function init(){
 init();
 
 addEventListener('resize',()=>{camera.aspect=innerWidth/innerHeight;camera.updateProjectionMatrix();renderer.setSize(innerWidth,innerHeight);});
-addEventListener('pagehide',()=>saveLocalGame(true));
+addEventListener('pagehide',()=>{endAnalyticsSession();saveLocalGame(true);});
