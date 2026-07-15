@@ -12,23 +12,30 @@ const dataDirectory=resolve(process.env.DATA_DIR||join(root,'.data')),roomsFile=
 const mime={'.html':'text/html; charset=utf-8','.js':'text/javascript; charset=utf-8','.css':'text/css; charset=utf-8','.json':'application/json','.png':'image/png','.jpg':'image/jpeg','.jpeg':'image/jpeg','.webp':'image/webp','.obj':'text/plain; charset=utf-8','.mtl':'text/plain; charset=utf-8'};
 const publicAssetFolders=new Set(['animals','characters','platformer','tent']);
 const posthogProxyPrefix='/forest-signal',posthogApiHost='eu.i.posthog.com',posthogAssetHost='eu-assets.i.posthog.com';
+const storyBossRegions=new Map([['0:1','animal-deer'],['1:1','animal-fox'],['1:0','animal-bunny'],['1:-1','animal-panda'],['0:-1','animal-hog'],['-1:-1','animal-monkey'],['-1:0','animal-tiger'],['-1:1','animal-parrot']]);
 let vite;
 
 function createRoom(startedAt=Date.now()){
-  const room=new Map();room.bosses=new Map();room.bossPositions=new Map();room.encounters=new Map();room.startedAt=startedAt;room.lastActive=Date.now();return room;
+  const room=new Map();room.bosses=new Map();room.bossPositions=new Map();room.defeatedBossSpecies=new Set();room.bossPhase='story';room.encounters=new Map();room.startedAt=startedAt;room.lastActive=Date.now();return room;
 }
 
-function worldSnapshot(room){return {timeElapsed:Math.max(0,(Date.now()-room.startedAt)/1000),bosses:Object.fromEntries(room.bosses),bossPositions:Object.fromEntries(room.bossPositions),encounters:[...room.encounters.values()]};}
+function worldSnapshot(room){return {timeElapsed:Math.max(0,(Date.now()-room.startedAt)/1000),bosses:Object.fromEntries(room.bosses),bossPositions:Object.fromEntries(room.bossPositions),bossPhase:room.bossPhase,defeatedBossSpecies:[...room.defeatedBossSpecies],encounters:[...room.encounters.values()]};}
 
 let persistTimer=null;
 function schedulePersist(){clearTimeout(persistTimer);persistTimer=setTimeout(persistRooms,600);}
 async function persistRooms(){
-  persistTimer=null;const payload={savedAt:Date.now(),rooms:Object.fromEntries([...rooms].map(([code,room])=>[code,{startedAt:room.startedAt,lastActive:room.lastActive,bosses:Object.fromEntries(room.bosses),bossPositions:Object.fromEntries(room.bossPositions),encounters:[...room.encounters.values()]}]))},temporary=`${roomsFile}.tmp`;
+  persistTimer=null;const payload={savedAt:Date.now(),rooms:Object.fromEntries([...rooms].map(([code,room])=>[code,{startedAt:room.startedAt,lastActive:room.lastActive,bosses:Object.fromEntries(room.bosses),bossPositions:Object.fromEntries(room.bossPositions),bossPhase:room.bossPhase,defeatedBossSpecies:[...room.defeatedBossSpecies],encounters:[...room.encounters.values()]}]))},temporary=`${roomsFile}.tmp`;
   try{await mkdir(dataDirectory,{recursive:true});await writeFile(temporary,JSON.stringify(payload));await rename(temporary,roomsFile);}catch(error){console.error('Room persistence error:',error.message);}
 }
 
 async function restoreRooms(){
-  try{const number=(value,min,max,fallback=0)=>Number.isFinite(Number(value))?Math.max(min,Math.min(max,Number(value))):fallback,payload=JSON.parse(await readFile(roomsFile,'utf8'));for(const [code,data] of Object.entries(payload.rooms||{})){const room=createRoom(Number(data.startedAt)||Date.now());room.lastActive=Number(data.lastActive)||Date.now();room.bosses=new Map(Object.entries(data.bosses||{}).map(([region,ratio])=>[region,Math.max(0,Math.min(1,Number(ratio)||0))]));room.bossPositions=new Map(Object.entries(data.bossPositions||{}).map(([region,value])=>[region,{x:number(value?.x,-100000,100000,0),y:number(value?.y,-10,20,0),z:number(value?.z,-100000,100000,0),rotation:number(value?.rotation,-Math.PI*4,Math.PI*4,0),arenaX:number(value?.arenaX,-100000,100000,0),arenaZ:number(value?.arenaZ,-100000,100000,0),controllerId:'',lastMoveAt:0}]));room.encounters=new Map((data.encounters||[]).filter(item=>item?.id).map(item=>[item.id,item]));rooms.set(code,room);}}
+  try{
+    const number=(value,min,max,fallback=0)=>Number.isFinite(Number(value))?Math.max(min,Math.min(max,Number(value))):fallback,payload=JSON.parse(await readFile(roomsFile,'utf8')),validBossSpecies=new Set(storyBossRegions.values());
+    for(const [code,data] of Object.entries(payload.rooms||{})){
+      const room=createRoom(Number(data.startedAt)||Date.now()),hasBossProgress=['story','complete','postgame'].includes(data.bossPhase);room.lastActive=Number(data.lastActive)||Date.now();room.bossPhase=hasBossProgress?data.bossPhase:'story';room.defeatedBossSpecies=new Set((Array.isArray(data.defeatedBossSpecies)?data.defeatedBossSpecies:[]).filter(species=>validBossSpecies.has(species)));
+      room.bosses=hasBossProgress?new Map(Object.entries(data.bosses||{}).map(([region,ratio])=>[region,Math.max(0,Math.min(1,Number(ratio)||0))])):new Map();room.bossPositions=hasBossProgress?new Map(Object.entries(data.bossPositions||{}).map(([region,value])=>[region,{x:number(value?.x,-100000,100000,0),y:number(value?.y,-10,20,0),z:number(value?.z,-100000,100000,0),rotation:number(value?.rotation,-Math.PI*4,Math.PI*4,0),arenaX:number(value?.arenaX,-100000,100000,0),arenaZ:number(value?.arenaZ,-100000,100000,0),level:number(value?.level,1,100,5),maxHp:number(value?.maxHp,1,100000,1),controllerId:'',lastMoveAt:0}])):new Map();room.encounters=new Map((data.encounters||[]).filter(item=>item?.id).map(item=>[item.id,item]));rooms.set(code,room);
+    }
+  }
   catch(error){if(error.code!=='ENOENT')console.error('Room restore error:',error.message);}
 }
 
@@ -97,14 +104,16 @@ function authorizedCompanion(client,id){return client.state.companions?.find(com
 function serverDamage(attackerSpecies,defenderSpecies){const attack=animalCombatStats[attackerSpecies]?.attack||8,defense=animalCombatStats[defenderSpecies]?.defense||4,critical=Math.random()<.12;return {critical,damage:Math.max(2,Math.round((attack*(.85+Math.random()*.3)-defense*.45)*(critical?1.5:1)))};}
 function seededRng(seed){let value=seed|0;return ()=>{value=Math.imul(value^value>>>15,1|value);value^=value+Math.imul(value^value>>>7,61|value);return ((value^value>>>14)>>>0)/4294967296;};}
 function worldHash(x,z){return Math.imul(x,73856093)^Math.imul(z,19349663);}
-function bossInfoForRegion(region){
+function bossInfoForRegion(region,phase='story',level=5){
   const match=/^(-?\d+):(-?\d+)$/.exec(region);if(!match)return null;const rx=Number(match[1]),rz=Number(match[2]);if(!Number.isSafeInteger(rx)||!Number.isSafeInteger(rz)||Math.abs(rx)>10000||Math.abs(rz)>10000||rx===0&&rz===0)return null;
-  const random=seededRng(worldHash(rx*37+811,rz*43-1297));if(random()>=.68)return null;const species=animalSpecies[Math.floor(random()*animalSpecies.length)],factor=5+random()*5,x=(rx+.5)*128+(random()-.5)*94,z=(rz+.5)*128+(random()-.5)*94,maxHp=Math.round(animalCombatStats[species].hp*(5+factor*.65));return {species,maxHp,x,z};
+  const random=seededRng(worldHash(rx*37+811,rz*43-1297)),eligibleRoll=random(),randomSpecies=animalSpecies[Math.floor(random()*animalSpecies.length)],storySpecies=storyBossRegions.get(region),storyMode=phase!=='postgame';if(storyMode&&!storySpecies||!storyMode&&!storySpecies&&eligibleRoll>=.68)return null;const species=storyMode?storySpecies:(storySpecies||randomSpecies),factor=5+random()*5,x=(rx+.5)*128+(random()-.5)*94,z=(rz+.5)*128+(random()-.5)*94,bossLevel=Math.max(5,Math.min(100,Math.floor(level)||5)),growthLevel=storyMode?Math.max(1,bossLevel-4):bossLevel,maxHp=Math.round((animalCombatStats[species].hp+(growthLevel-1)*8)*(5+factor*.65));return {species,maxHp,x,z,level:bossLevel};
 }
 
 function ensureBossPosition(room,region,bossInfo){
-  let boss=room.bossPositions.get(region);if(!boss){boss={x:bossInfo.x,y:0,z:bossInfo.z,rotation:0,arenaX:bossInfo.x,arenaZ:bossInfo.z,controllerId:'',lastMoveAt:0};room.bossPositions.set(region,boss);}return boss;
+  let boss=room.bossPositions.get(region);if(!boss){boss={x:bossInfo.x,y:0,z:bossInfo.z,rotation:0,arenaX:bossInfo.x,arenaZ:bossInfo.z,level:bossInfo.level,maxHp:bossInfo.maxHp,controllerId:'',lastMoveAt:0};room.bossPositions.set(region,boss);}return boss;
 }
+
+function clientPostgameBossLevel(client){const companions=client.state.companions||[];if(!companions.length)return 5;const average=companions.reduce((total,animal)=>total+(animal.level||1),0)/companions.length;return Math.max(5,Math.min(100,Math.round(average*1.15)+2));}
 
 function leave(client){
   if(!client.room)return;
@@ -140,23 +149,26 @@ wss.on('connection',socket=>{
     if(message.type==='latency_ping'){if(allowRate(client,'latency',4,5000))send(socket,{type:'latency_pong',sentAt:finiteNumber(message.sentAt,0,1e12,0),serverTime:Date.now()});return;}
     if(message.type==='state'&&client.room){
       if(!client.ready||!allowRate(client,'state',20,1000))return;const source=message.state||{},x=finiteNumber(source.x,-100000,100000,client.state.x),y=finiteNumber(source.y,-10,200,client.state.y),z=finiteNumber(source.z,-100000,100000,client.state.z);
-      const companions=Array.isArray(source.companions)?source.companions.slice(0,12).map(pet=>({id:cleanText(pet.id,32),species:cleanText(pet.species,24),x:finiteNumber(pet.x,x-30,x+30,x),y:finiteNumber(pet.y,-10,200,y),z:finiteNumber(pet.z,z-30,z+30,z),rotation:finiteNumber(pet.rotation,-Math.PI*4,Math.PI*4,0),moving:Boolean(pet.moving)})).filter(pet=>pet.id&&allowedSpecies.has(pet.species)):[];
+      const companions=Array.isArray(source.companions)?source.companions.slice(0,12).map(pet=>({id:cleanText(pet.id,32),species:cleanText(pet.species,24),level:Math.max(1,Math.min(100,Math.floor(Number(pet.level)||1))),x:finiteNumber(pet.x,x-30,x+30,x),y:finiteNumber(pet.y,-10,200,y),z:finiteNumber(pet.z,z-30,z+30,z),rotation:finiteNumber(pet.rotation,-Math.PI*4,Math.PI*4,0),moving:Boolean(pet.moving)})).filter(pet=>pet.id&&allowedSpecies.has(pet.species)):[];
       client.state={x,y,z,rotation:finiteNumber(source.rotation,-Math.PI*4,Math.PI*4,0),moving:Boolean(source.moving),companions};
       broadcast(rooms.get(client.room),{type:'state',id:client.id,state:client.state},socket);
       return;
     }
     if(message.type==='boss_hit'&&client.room){
-      const room=rooms.get(client.room),region=cleanText(message.region,32),companion=authorizedCompanion(client,message.companionId),bossInfo=bossInfoForRegion(region);if(!region||!companion||!bossInfo)return;
+      const room=rooms.get(client.room),region=cleanText(message.region,32),companion=authorizedCompanion(client,message.companionId),storedBoss=room.bossPositions.get(region),level=storedBoss?.level||(room.bossPhase==='postgame'?clientPostgameBossLevel(client):5+room.defeatedBossSpecies.size*2),bossInfo=bossInfoForRegion(region,room.bossPhase,level);if(!region||!companion||!bossInfo)return;
       const hitKey=`boss:${region}:${companion.id}`,now=Date.now();if(now-(client.lastHits.get(hitKey)||0)<550)return;client.lastHits.set(hitKey,now);
-      const boss=ensureBossPosition(room,region,bossInfo),result=serverDamage(companion.species,bossInfo.species),previous=room.bosses.get(region)??1,ratio=Math.max(0,previous-result.damage/bossInfo.maxHp);room.bosses.set(region,ratio);room.lastActive=now;schedulePersist();broadcast(room,{type:'boss_state',region,hpRatio:ratio,boss,attackerId:client.id,attackerName:client.name,damage:result.damage,critical:result.critical});return;
+      const boss=ensureBossPosition(room,region,bossInfo),result=serverDamage(companion.species,bossInfo.species),previous=room.bosses.get(region)??1,ratio=Math.max(0,previous-result.damage/(boss.maxHp||bossInfo.maxHp)),wasDefeated=previous<=0;room.bosses.set(region,ratio);room.lastActive=now;if(!wasDefeated&&ratio<=0&&room.bossPhase==='story'&&storyBossRegions.get(region)===bossInfo.species){room.defeatedBossSpecies.add(bossInfo.species);if(room.defeatedBossSpecies.size>=storyBossRegions.size)room.bossPhase='complete';}schedulePersist();broadcast(room,{type:'boss_state',region,hpRatio:ratio,boss,attackerId:client.id,attackerName:client.name,damage:result.damage,critical:result.critical});if(!wasDefeated&&ratio<=0&&storyBossRegions.get(region)===bossInfo.species)broadcast(room,{type:'boss_progress',bossPhase:room.bossPhase,defeatedBossSpecies:[...room.defeatedBossSpecies]});return;
     }
     if(message.type==='boss_start'&&client.room){
-      if(!allowRate(client,'boss_start',4,10000))return;const room=rooms.get(client.room),region=cleanText(message.region,32),bossInfo=bossInfoForRegion(region);if(!bossInfo)return;
+      if(!allowRate(client,'boss_start',4,10000))return;const room=rooms.get(client.room),region=cleanText(message.region,32),level=room.bossPhase==='postgame'?clientPostgameBossLevel(client):5+room.defeatedBossSpecies.size*2,bossInfo=bossInfoForRegion(region,room.bossPhase,level);if(!bossInfo)return;
       const boss=ensureBossPosition(room,region,bossInfo),now=Date.now();if(!boss.controllerId||!room.has(boss.controllerId)||now-(boss.lastMoveAt||0)>2000)boss.controllerId=client.id;boss.lastMoveAt=now;room.lastActive=now;schedulePersist();broadcast(room,{type:'boss_state',region,hpRatio:room.bosses.get(region)??1,boss});return;
     }
     if(message.type==='boss_move'&&client.room){
-      if(!allowRate(client,'boss_move',15,1000))return;const room=rooms.get(client.room),region=cleanText(message.region,32),bossInfo=bossInfoForRegion(region),boss=room.bossPositions.get(region);if(!bossInfo||!boss||boss.controllerId!==client.id)return;
+      if(!allowRate(client,'boss_move',15,1000))return;const room=rooms.get(client.room),region=cleanText(message.region,32),boss=room.bossPositions.get(region),bossInfo=bossInfoForRegion(region,room.bossPhase,boss?.level||5);if(!bossInfo||!boss||boss.controllerId!==client.id)return;
       const x=finiteNumber(message.x,boss.x-5,boss.x+5,boss.x),z=finiteNumber(message.z,boss.z-5,boss.z+5,boss.z);if(Math.hypot(x-boss.arenaX,z-boss.arenaZ)<=14){boss.x=x;boss.z=z;}boss.y=finiteNumber(message.y,-.1,10,boss.y);boss.rotation=finiteNumber(message.rotation,-Math.PI*4,Math.PI*4,boss.rotation);boss.lastMoveAt=Date.now();broadcast(room,{type:'boss_state',region,hpRatio:room.bosses.get(region)??1,boss},socket);return;
+    }
+    if(message.type==='boss_continue'&&client.room){
+      const room=rooms.get(client.room);if(room.bossPhase!=='complete'||!allowRate(client,'boss_continue',2,10000))return;room.bossPhase='postgame';room.bosses.clear();room.bossPositions.clear();room.lastActive=Date.now();schedulePersist();broadcast(room,{type:'boss_progress',bossPhase:'postgame',defeatedBossSpecies:[...room.defeatedBossSpecies],reset:true});return;
     }
     if(message.type==='encounter_start'&&client.room){
       const room=rooms.get(client.room),source=message.encounter||{},id=cleanText(source.id,48),species=cleanText(source.species,24),number=value=>Number.isFinite(Number(value))?Number(value):0;if(!id||!species)return;
