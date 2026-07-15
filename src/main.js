@@ -43,27 +43,43 @@ const heroSpotlight=new THREE.SpotLight(0xd9ccff,8,30,.72,.78,1.45);heroSpotligh
 
 const world = new THREE.Group(); scene.add(world);
 const combatParticleGroup=new THREE.Group(),combatParticles=[],combatParticleGeometry=new THREE.SphereGeometry(.085,6,5),combatParticleMaterials=new Map();scene.add(combatParticleGroup);
-const combatParticleColors={run:[0xb78a5f,0x8f694b],takeoff:[0xd8efad,0xf3d998],land:[0xd9aa72,0xf0d09b],hit:[0xffdd62,0xff9f43],critical:[0xfff0a3,0xff63ad,0xffffff],heal:[0xff8fcf,0xf7c1df,0xffd9ef]};
+const combatParticleColors={run:[0xb78a5f,0x8f694b],takeoff:[0xd8efad,0xf3d998],land:[0xd9aa72,0xf0d09b],hit:[0xffdd62,0xff9f43],critical:[0xfff0a3,0xff63ad,0xffffff],heal:[0xff8fcf,0xf7c1df,0xffd9ef],levelup:[0xffdc45,0xfff5a0,0xffffff]};
+const levelUpEffectGroup=new THREE.Group(),levelUpEffects=[],levelUpBeamGeometry=new THREE.CylinderGeometry(.48,.7,4.8,20,1,true),levelUpRingGeometry=new THREE.RingGeometry(.48,.68,28);scene.add(levelUpEffectGroup);
 
 function particleMaterial(color){if(!combatParticleMaterials.has(color))combatParticleMaterials.set(color,new THREE.MeshBasicMaterial({color,transparent:true,depthWrite:false,blending:THREE.AdditiveBlending}));return combatParticleMaterials.get(color);}
 
 function emitCombatParticles(position,type,direction=null){
-  const settings={run:{count:3,life:.3,speed:1.15,size:.6},takeoff:{count:10,life:.5,speed:2.8,size:.85},land:{count:14,life:.55,speed:3.5,size:1},hit:{count:11,life:.48,speed:4.6,size:1},critical:{count:24,life:.72,speed:7,size:1.35},heal:{count:42,life:1.5,speed:1.35,size:1.9}}[type];if(!settings)return;
-  const colors=combatParticleColors[type],baseY=(type==='hit'||type==='critical') ? .62 : type==='heal' ? .38 : .08;
+  const settings={run:{count:3,life:.3,speed:1.15,size:.6},takeoff:{count:10,life:.5,speed:2.8,size:.85},land:{count:14,life:.55,speed:3.5,size:1},hit:{count:11,life:.48,speed:4.6,size:1},critical:{count:24,life:.72,speed:7,size:1.35},heal:{count:42,life:1.5,speed:1.35,size:1.9},levelup:{count:46,life:1.65,speed:1.9,size:1.45}}[type];if(!settings)return;
+  const colors=combatParticleColors[type],baseY=(type==='hit'||type==='critical') ? .62 : type==='heal'||type==='levelup' ? .38 : .08;
   for(let i=0;i<settings.count;i++){
     const angle=Math.random()*Math.PI*2,mesh=new THREE.Mesh(combatParticleGeometry,particleMaterial(colors[i%colors.length]));mesh.position.set(position.x+(Math.random()-.5)*(type==='heal'?.75:.28),position.y+baseY+Math.random()*(type==='heal'?.9:.18),position.z+(Math.random()-.5)*(type==='heal'?.75:.28));mesh.renderOrder=8;
     let vx=Math.cos(angle)*settings.speed*(.35+Math.random()*.65),vz=Math.sin(angle)*settings.speed*(.35+Math.random()*.65),vy;
     if(type==='run'){vx*=.55;vz*=.55;vy=.25+Math.random()*.45;}
     else if(type==='heal'){vx*=.58;vz*=.58;vy=.65+Math.random()*1.25;}
+    else if(type==='levelup'){vx*=.38;vz*=.38;vy=1.7+Math.random()*2.4;}
     else if(type==='land'){vy=.35+Math.random()*.7;}
     else if(type==='takeoff'){vy=1.4+Math.random()*2.4;}
     else{vx+=(direction?.x||0)*settings.speed*.65;vz+=(direction?.z||0)*settings.speed*.65;vy=1.4+Math.random()*settings.speed*.65;}
-    const scale=settings.size*(.55+Math.random()*.75);mesh.scale.setScalar(scale);combatParticleGroup.add(mesh);combatParticles.push({mesh,vx,vy,vz,life:settings.life,startLife:settings.life,gravity:type==='heal'?-.12:type==='run'?2.5:type==='land'?4.5:7,spin:(Math.random()-.5)*8});
+    const scale=settings.size*(.55+Math.random()*.75);mesh.scale.setScalar(scale);combatParticleGroup.add(mesh);combatParticles.push({mesh,vx,vy,vz,life:settings.life,startLife:settings.life,gravity:type==='heal'?-.12:type==='levelup'?-.25:type==='run'?2.5:type==='land'?4.5:7,spin:(Math.random()-.5)*8});
   }
 }
 
 function updateCombatParticles(dt){
   for(let i=combatParticles.length-1;i>=0;i--){const particle=combatParticles[i];particle.life-=dt;if(particle.life<=0){combatParticleGroup.remove(particle.mesh);combatParticles.splice(i,1);continue;}particle.vy-=particle.gravity*dt;particle.mesh.position.x+=particle.vx*dt;particle.mesh.position.y+=particle.vy*dt;particle.mesh.position.z+=particle.vz*dt;particle.mesh.rotation.y+=particle.spin*dt;particle.mesh.scale.multiplyScalar(Math.max(.82,1-dt*3.6));}
+}
+
+function emitLevelUpEffect(animal,levels=1){
+  if(!animal||animal.userData.dead)return;
+  const group=new THREE.Group(),beamMaterial=new THREE.MeshBasicMaterial({color:0xffd83d,transparent:true,opacity:0,depthWrite:false,depthTest:false,side:THREE.DoubleSide,blending:THREE.AdditiveBlending}),ringMaterial=new THREE.MeshBasicMaterial({color:0xffef75,transparent:true,opacity:0,depthWrite:false,depthTest:false,side:THREE.DoubleSide,blending:THREE.AdditiveBlending}),beam=new THREE.Mesh(levelUpBeamGeometry,beamMaterial),ring=new THREE.Mesh(levelUpRingGeometry,ringMaterial),light=new THREE.PointLight(0xffd94e,0,7,1.7);
+  ring.rotation.x=-Math.PI/2;beam.renderOrder=9;ring.renderOrder=10;group.add(beam,ring,light);levelUpEffectGroup.add(group);levelUpEffects.push({animal,group,beam,ring,light,time:0,duration:2.25,power:Math.min(1.45,1+(levels-1)*.12),beamMaterial,ringMaterial});emitCombatParticles(animal.position,'levelup');
+}
+
+function updateLevelUpEffects(dt){
+  for(let i=levelUpEffects.length-1;i>=0;i--){
+    const effect=levelUpEffects[i];effect.time+=dt;const progress=Math.min(effect.time/effect.duration,1),rise=1-Math.pow(1-Math.min(progress/.28,1),3),fade=progress<.72?1:1-(progress-.72)/.28,pulse=.82+Math.sin(effect.time*12)*.18,radius=Math.max(.8,(effect.animal.userData.collisionRadius||.62)*1.35)*effect.power;
+    effect.group.position.set(effect.animal.position.x,effect.animal.position.y+.03,effect.animal.position.z);effect.beam.position.y=2.4*rise;effect.beam.scale.set(radius*(.72+pulse*.18),Math.max(.02,rise),radius*(.72+pulse*.18));effect.beamMaterial.opacity=.38*fade*pulse;effect.ring.scale.setScalar(radius*(.35+progress*1.18));effect.ringMaterial.opacity=.8*fade*(1-progress*.45);effect.light.position.y=1.15;effect.light.intensity=5.5*fade*pulse;
+    if(progress>=1){levelUpEffectGroup.remove(effect.group);effect.beamMaterial.dispose();effect.ringMaterial.dispose();levelUpEffects.splice(i,1);}
+  }
 }
 const TILE = 32, GRID = 5;
 const ORIGIN_LAYOUT={
@@ -632,6 +648,7 @@ const bossRegions=new Map(),BOSS_REGION_SIZE=TILE*4;
 let merchant=null,doctor=null,doctorState=null,purchaseState=null,huntPrompt=null,battle=null,battleActionState=null,potionCount=Math.max(0,Math.floor(Number(pendingLocalSave?.potions)||0)),doctorPotionStock=4,doctorPotionRestockTimer=0;
 let localSaveRestored=false,localSaveElapsed=0,lastLocalSaveJson='';
 const DOCTOR_POTION_MAX_STOCK=4,DOCTOR_POTION_PRICE=15,DOCTOR_HEAL_ALL_PRICE=10,DOCTOR_REVIVE_PRICE=200,DOCTOR_UPGRADE_PRICE=100,DOCTOR_POTION_RESTOCK_TIME=38;
+const SEVERE_INJURY_RATIO=.25,SEVERE_INJURY_SPEED=.48,SEVERE_INJURY_COLOR=new THREE.Color(0xff182c);
 
 function initializeAnimalStats(animal,wild=false){
   const base=animalBaseStats[animal.userData.species]||{hp:45,attack:10,defense:4,speed:6.5};
@@ -640,6 +657,38 @@ function initializeAnimalStats(animal,wild=false){
   animal.userData.attack=animal.userData.attack||base.attack;animal.userData.defense=animal.userData.defense||base.defense;animal.userData.combatSpeed=animal.userData.combatSpeed||base.speed;
   const personalityKeys=Object.keys(animalPersonalityDefs);animal.userData.personality=animal.userData.personality||personalityKeys[Math.floor(Math.random()*personalityKeys.length)];
   animal.userData.baseScale=animal.userData.baseScale||animal.scale.x;animal.userData.fatigue=0;animal.userData.exhausted=false;animal.userData.verticalVelocity=animal.userData.verticalVelocity||0;animal.userData.grounded=animal.userData.grounded??true;animal.userData.jumpCooldown=animal.userData.jumpCooldown||0;animal.userData.wild=wild;animal.userData.dead=false;animal.userData.restingForRecovery=false;animal.userData.cryCooldown=2+Math.random()*3;
+}
+
+function severeInjurySpeed(animal){
+  return !animal.userData.dead&&animal.userData.hp/Math.max(1,animal.userData.maxHp)<=SEVERE_INJURY_RATIO?SEVERE_INJURY_SPEED:1;
+}
+
+function prepareAnimalInjuryVisual(animal){
+  if(animal.userData.injuryVisual)return animal.userData.injuryVisual;
+  const materials=[];
+  animal.traverse(object=>{
+    if(!object.isMesh||!object.material)return;
+    const source=Array.isArray(object.material)?object.material:[object.material],clones=source.map(material=>material.clone());
+    object.material=Array.isArray(object.material)?clones:clones[0];
+    clones.forEach(material=>materials.push({material,color:material.color?.clone(),emissive:material.emissive?.clone(),emissiveIntensity:material.emissiveIntensity??1}));
+  });
+  const light=new THREE.PointLight(0xff2438,0,5,2);light.position.set(0,1.15/Math.max(.01,animal.userData.baseScale||animal.scale.x),0);animal.add(light);
+  animal.userData.injuryVisual={materials,light};return animal.userData.injuryVisual;
+}
+
+function updateAnimalInjuryEffects(time){
+  const visibleAnimals=new Set([...animals,...followers,...shopSlots.map(slot=>slot.animal).filter(Boolean)]);
+  visibleAnimals.forEach(animal=>{
+    const ratio=animal.userData.hp/Math.max(1,animal.userData.maxHp),severe=!animal.userData.dead&&ratio<=SEVERE_INJURY_RATIO;
+    if(!severe&&!animal.userData.injuryVisual)return;
+    const visual=prepareAnimalInjuryVisual(animal),pulse=.5+.5*Math.sin(time*9+(animal.userData.phase||0));
+    visual.materials.forEach(entry=>{
+      if(entry.color&&entry.material.color)entry.material.color.copy(entry.color).lerp(SEVERE_INJURY_COLOR,severe?.34+pulse*.2:0);
+      if(entry.emissive&&entry.material.emissive){entry.material.emissive.copy(entry.emissive);if(severe)entry.material.emissive.lerp(SEVERE_INJURY_COLOR,.72);}
+      if('emissiveIntensity' in entry.material)entry.material.emissiveIntensity=severe?Math.max(entry.emissiveIntensity,.5+pulse*.85):entry.emissiveIntensity;
+    });
+    visual.light.intensity=severe?.8+pulse*2.1:0;
+  });
 }
 
 function highestCompanionLevel(){return Math.max(1,...followers.map(animal=>animal.userData.level||1),...fallenFollowers.map(animal=>animal.userData.level||1));}
@@ -738,7 +787,7 @@ function updateAnimals(dt){
     const motion=a.userData.motion;
     if(!motion)return;
     const healthRatio=a.userData.hp/a.userData.maxHp;
-    if(healthRatio<=.25)a.userData.restingForRecovery=true;
+    if(healthRatio<=SEVERE_INJURY_RATIO)a.userData.restingForRecovery=true;
     else if(a.userData.restingForRecovery&&healthRatio>=.48)a.userData.restingForRecovery=false;
     if(a.userData.restingForRecovery){motion.walking=false;recoverAnimal(a,dt,true);motion.weight=THREE.MathUtils.damp(motion.weight,0,7,dt);animateAnimalFeet(a,motion.phase,motion.weight);return;}
     if(!motion.walking){motion.wait-=dt;if(motion.wait<=0)chooseAnimalTarget(a);}
@@ -1075,7 +1124,7 @@ function doctorUpgrade(animal){
   if(!followers.includes(animal)||animal.userData.dead)return showDoctorResult('這隻動物目前無法接受訓練。');
   if(coinBalance<DOCTOR_UPGRADE_PRICE)return showDoctorResult(`升級需要 ${DOCTOR_UPGRADE_PRICE} 枚金幣，你現在還不夠。`);
   setCoinBalance(coinBalance-DOCTOR_UPGRADE_PRICE);animal.userData.level++;animal.userData.maxHp+=8;animal.userData.hp=Math.min(animal.userData.maxHp,animal.userData.hp+8);animal.userData.attack+=2;animal.userData.defense+=1;animal.userData.combatSpeed+=.15;
-  refreshWildAnimalLevels();trackGameEvent('doctor service used',{service:'upgrade',price:DOCTOR_UPGRADE_PRICE,species:animal.userData.species,new_level:animal.userData.level,coin_balance:coinBalance});const special=(animalVoices[animal.userData.species]||['嗷嗚——！','嗚——！'])[1];emitAnimalSound(animal,`✦ ${special}——！ ${special} ✦`,2.7);showDoctorResult(`${animal.userData.displayName}完成訓練了，看起來比之前更可靠。`);
+  refreshWildAnimalLevels();trackGameEvent('doctor service used',{service:'upgrade',price:DOCTOR_UPGRADE_PRICE,species:animal.userData.species,new_level:animal.userData.level,coin_balance:coinBalance});const special=(animalVoices[animal.userData.species]||['嗷嗚——！','嗚——！'])[1];emitLevelUpEffect(animal);emitAnimalSound(animal,`✦ ${special}——！ ${special} ✦`,2.7);showDoctorResult(`${animal.userData.displayName}完成訓練了，看起來比之前更可靠。`);
 }
 
 const huntBubble=document.createElement('div'),huntText=document.createElement('div'),huntActions=document.createElement('div'),huntYes=document.createElement('button'),huntNo=document.createElement('button');
@@ -1132,7 +1181,7 @@ function openHuntPrompt(animal){
 
 function showBattleStarterChoices(){
   const enemy=huntPrompt?.target;if(!enemy||enemy.userData.dead)return closeHuntPrompt();
-  const candidates=followers.filter(animal=>!animal.userData.dead&&animal.userData.hp/animal.userData.maxHp>=.25);
+  const candidates=followers.filter(animal=>!animal.userData.dead&&animal.userData.hp/animal.userData.maxHp>=SEVERE_INJURY_RATIO);
   if(!candidates.length){huntText.textContent='你的動物目前太虛弱了。先讓牠停下來休息回血吧。';huntNo.textContent='離開';huntActions.replaceChildren(huntNo);return;}
   huntText.textContent=`要派哪一隻動物迎戰 ${enemy.userData.displayName}？`;
   huntNo.textContent='返回';huntActions.replaceChildren(...candidates.map(animal=>doctorButton(`${animal.userData.displayName} · Lv.${animal.userData.level}`,()=>startBattle(animal))),huntNo);
@@ -1148,7 +1197,7 @@ function gainExperience(animal,amount){
   }
   if(levels){
     if(animal.userData.following)refreshWildAnimalLevels();const special=(animalVoices[animal.userData.species]||['嗷嗚——！','嗚——！'])[1];animal.userData.cryCooldown=4;
-    emitAnimalSound(animal,`✦ ${special}——！ ${special} ✦`,2.7);
+    emitLevelUpEffect(animal,levels);emitAnimalSound(animal,`✦ ${special}——！ ${special} ✦`,2.7);
   }
   return levels;
 }
@@ -1262,7 +1311,7 @@ closeActionButton.addEventListener('click',closeBattleAction);
 
 function startBattle(selectedAlly=null){
   const enemy=huntPrompt?.target;if(!enemy||enemy.userData.dead)return closeHuntPrompt();
-  if(!enemy.userData.boss&&!enemy.userData.sharedEncounterId)setWildAnimalLevel(enemy);const livingFollowers=followers.filter(a=>!a.userData.dead),candidates=enemy.userData.boss?livingFollowers:livingFollowers.filter(a=>a.userData.hp/a.userData.maxHp>=.25);
+  if(!enemy.userData.boss&&!enemy.userData.sharedEncounterId)setWildAnimalLevel(enemy);const livingFollowers=followers.filter(a=>!a.userData.dead),candidates=enemy.userData.boss?livingFollowers:livingFollowers.filter(a=>a.userData.hp/a.userData.maxHp>=SEVERE_INJURY_RATIO);
   if(!candidates.length){huntText.textContent='你的動物目前太虛弱了。先讓牠停下來休息回血吧。';huntActions.style.display='none';return;}
   if(!enemy.userData.boss&&!candidates.includes(selectedAlly))return showBattleStarterChoices();
   const allies=enemy.userData.boss?[...candidates]:[selectedAlly];
@@ -1432,7 +1481,7 @@ function updateBattle(dt){
   const enemyLocallyControlled=enemy.userData.boss&&currentRoom?(!enemy.userData.sharedControllerId||enemy.userData.sharedControllerId===localPlayerId):(!enemy.userData.sharedEncounterId||enemy.userData.sharedControllerId===localPlayerId);
   const combatants=[...aliveAllies,...(enemyLocallyControlled?[enemy]:[])].filter(a=>!a.userData.dead);
   combatants.forEach((animal,index)=>{
-    const state=battle.states.get(animal);if(!state)return;const affinityEffect=animalAffinityEffect(animal),combatSpeed=animal.userData.combatSpeed*affinityEffect.speed;
+    const state=battle.states.get(animal);if(!state)return;const affinityEffect=animalAffinityEffect(animal),injurySpeed=severeInjurySpeed(animal),combatSpeed=animal.userData.combatSpeed*affinityEffect.speed*injurySpeed;
     state.targetLock=Math.max(0,state.targetLock-dt);
     const attacking=['aim','charge','jumpCrouch','jumpLeap','jumpLand'].includes(state.state),lockedTarget=state.target&&!state.target.userData.dead&&(attacking||state.targetLock>0)?state.target:null,opponent=lockedTarget||livingBattleTarget(animal);if(!opponent)return;
     if(!lockedTarget){state.target=opponent;state.targetLock=.85+Math.random()*.7;}
@@ -1440,7 +1489,7 @@ function updateBattle(dt){
     let walking=false;state.time+=dt;
     if(state.state==='standoff'){
       animal.userData.fatigue=Math.max(0,animal.userData.fatigue-dt*.045);
-      state.cooldown-=dt*affinityEffect.speed;const desired=2.5+(animal===enemy ? .15 : index*.12);
+      state.cooldown-=dt*affinityEffect.speed*injurySpeed;const desired=2.5+(animal===enemy ? .15 : index*.12);
       if(dist>desired+.35)walking=moveCombatAnimalFacing(animal,dirX,dirZ,Math.min(combatSpeed*.35*dt,dist-desired));
       else if(dist<desired-.35)walking=moveCombatAnimalFacing(animal,-dirX,-dirZ,combatSpeed*.25*dt);
       else walking=moveCombatAnimalFacing(animal,-dirZ*state.strafe,dirX*state.strafe,.34*dt);
@@ -1496,7 +1545,7 @@ function updateBattle(dt){
     }
     if(state.state!=='roll'&&state.state!=='hit'){animal.userData.jumpCooldown=Math.max(0,(animal.userData.jumpCooldown||0)-dt);updateFollowerVertical(animal,dt);}
     if(walking&&animal.userData.grounded){state.particleCooldown-=dt;if(state.particleCooldown<=0){emitCombatParticles(animal.position,'run');state.particleCooldown=.1+Math.random()*.06;}}else state.particleCooldown=Math.min(state.particleCooldown,.04);
-    animal.userData.phase=(animal.userData.phase||0)+dt*(walking?11:3);animal.userData.walkWeight=THREE.MathUtils.damp(animal.userData.walkWeight||0,walking?1:0,10,dt);animateAnimalFeet(animal,animal.userData.phase,animal.userData.walkWeight);
+    animal.userData.phase=(animal.userData.phase||0)+dt*(walking?11:3)*injurySpeed;animal.userData.walkWeight=THREE.MathUtils.damp(animal.userData.walkWeight||0,walking?1:0,10,dt);animateAnimalFeet(animal,animal.userData.phase,animal.userData.walkWeight);
   });
 }
 
@@ -1630,7 +1679,7 @@ function updateFollowers(dt){
     const returning=!!animal.userData.returningFromBattle;
     animal.userData.fatigue=Math.max(0,(animal.userData.fatigue||0)-dt*.075);animal.userData.exhausted=false;
     const healthRatio=animal.userData.hp/animal.userData.maxHp;
-    if(healthRatio<=.25&&!returning)animal.userData.restingForRecovery=true;
+    if(healthRatio<=SEVERE_INJURY_RATIO&&!returning)animal.userData.restingForRecovery=true;
     else if(animal.userData.restingForRecovery&&healthRatio>=.48)animal.userData.restingForRecovery=false;
     if(animal.userData.restingForRecovery){
       animal.userData.isWalking=false;recoverAnimal(animal,dt,true);updateFollowerVertical(animal,dt);
@@ -1650,13 +1699,13 @@ function updateFollowers(dt){
     let walking=dist>.18,blocked=false;animal.userData.jumpCooldown=Math.max(0,animal.userData.jumpCooldown-dt);
     if(dist>11&&!returning&&!blockedByWorld(tx,tz,.62,0,1.1)&&followerSeparationPenalty(tx,tz,animal)===0){startFollowerTeleport(animal,tx,tz);walking=false;}
     else if(walking){
-      const dirX=dx/dist,dirZ=dz/dist,step=Math.min((returning?3.4:4)*dt,dist),nx=animal.position.x+dirX*step,nz=animal.position.z+dirZ*step;
+      const dirX=dx/dist,dirZ=dz/dist,injurySpeed=severeInjurySpeed(animal),step=Math.min((returning?3.4:4)*injurySpeed*dt,dist),nx=animal.position.x+dirX*step,nz=animal.position.z+dirZ*step;
       let currentPenalty=followerSeparationPenalty(animal.position.x,animal.position.z,animal),nextPenalty=followerSeparationPenalty(nx,animal.position.z,animal);
       if(!blockedByWorld(nx,animal.position.z,.62,animal.position.y,1.1)&&(nextPenalty<.001||nextPenalty<currentPenalty)){animal.position.x=nx;currentPenalty=nextPenalty;}else blocked=true;
       nextPenalty=followerSeparationPenalty(animal.position.x,nz,animal);
       if(!blockedByWorld(animal.position.x,nz,.62,animal.position.y,1.1)&&(nextPenalty<.001||nextPenalty<currentPenalty))animal.position.z=nz;else blocked=true;
       if(blocked&&animal.userData.grounded&&animal.userData.jumpCooldown<=0){animal.userData.verticalVelocity=7.5;animal.userData.grounded=false;animal.userData.jumpCooldown=.9;}
-      animal.rotation.y=Math.atan2(dirX,dirZ);animal.userData.phase+=dt*8;
+      animal.rotation.y=Math.atan2(dirX,dirZ);animal.userData.phase+=dt*8*injurySpeed;
     }
     updateFollowerVertical(animal,dt);
     animal.userData.isWalking=walking;
@@ -1892,7 +1941,7 @@ function ensureCryBubble(animal){
 function updateAnimalOverlays(dt){
   const nearbyWild=animals.filter(animal=>animal.position.distanceTo(hero.position)<12),cryingAnimals=new Set([...followers,...nearbyWild,...cryBubbles.keys()]);if(battle)cryingAnimals.add(battle.enemy);
   cryingAnimals.forEach(animal=>{
-    const relevant=followers.includes(animal)||nearbyWild.includes(animal)||battle?.enemy===animal,low=relevant&&!animal.userData.dead&&animal.userData.hp/animal.userData.maxHp<=.25,bubble=ensureCryBubble(animal);
+    const relevant=followers.includes(animal)||nearbyWild.includes(animal)||battle?.enemy===animal,low=relevant&&!animal.userData.dead&&animal.userData.hp/animal.userData.maxHp<=SEVERE_INJURY_RATIO,bubble=ensureCryBubble(animal);
     animal.userData.cryCooldown=(animal.userData.cryCooldown||0)-dt;
     if(low&&animal.userData.cryCooldown<=0){
       bubble.textContent=(animalVoices[animal.userData.species]||['嗚嗚……'])[0];bubble.dataset.timer=1.65;animal.userData.cryCooldown=4+Math.random()*3;bubble.classList.remove('hidden');
@@ -2001,7 +2050,7 @@ function animate(){
   if(heroModel) heroModel.position.y=Math.abs(Math.sin(walkPhase))*walkWeight*.055;
   animateWalkRig(walkPhase,walkWeight);
   marker.scale.setScalar(1+Math.sin(t*5)*.08); ring.material.opacity=.55+Math.sin(t*5)*.25;
-  updateAnimals(dt);updateNpcs(dt);resolveRoamingEntitySeparation();updateFollowers(dt);updateBattle(dt);updateCombatParticles(dt);updateSharedEncounters(dt);updateSharedBosses(dt);updateDeathsAndRespawns(dt);updateShop(dt);updateDoctor(dt);updateCoins(dt,t);
+  updateAnimals(dt);updateNpcs(dt);resolveRoamingEntitySeparation();updateFollowers(dt);updateBattle(dt);updateAnimalInjuryEffects(t);updateLevelUpEffects(dt);updateCombatParticles(dt);updateSharedEncounters(dt);updateSharedBosses(dt);updateDeathsAndRespawns(dt);updateShop(dt);updateDoctor(dt);updateCoins(dt,t);
   arrangeTiles();updateJump(dt);resolvePlatformSideOverlap();
   updateEnvironment(dt,t+worldTimeOffset);
   updateRemotePlayers(dt);sendPlayerState(t);
