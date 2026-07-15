@@ -11,6 +11,7 @@ const rooms=new Map();
 const dataDirectory=resolve(process.env.DATA_DIR||join(root,'.data')),roomsFile=join(dataDirectory,'rooms.json');
 const mime={'.html':'text/html; charset=utf-8','.js':'text/javascript; charset=utf-8','.css':'text/css; charset=utf-8','.json':'application/json','.png':'image/png','.jpg':'image/jpeg','.jpeg':'image/jpeg','.webp':'image/webp','.obj':'text/plain; charset=utf-8','.mtl':'text/plain; charset=utf-8'};
 const publicAssetFolders=new Set(['animals','characters','platformer','tent']);
+const posthogProxyPrefix='/forest-signal',posthogApiHost='eu.i.posthog.com',posthogAssetHost='eu-assets.i.posthog.com';
 let vite;
 
 function createRoom(startedAt=Date.now()){
@@ -37,10 +38,32 @@ async function serveFile(req,res,path,cache=false){
   const data=await readFile(path);res.statusCode=200;res.setHeader('Content-Type',mime[extname(path).toLowerCase()]||'application/octet-stream');if(cache)res.setHeader('Cache-Control','public, max-age=86400');res.end(req.method==='HEAD'?undefined:data);
 }
 
-const server=createServer(async(req,res)=>{
-  if(!production)return vite.middlewares(req,res,()=>{res.statusCode=404;res.end('Not found');});
+async function proxyPostHogRequest(req,res,url){
+  if(req.method==='OPTIONS'){res.writeHead(204,{'Cache-Control':'no-store'});res.end();return;}
+  if(!['GET','HEAD','POST'].includes(req.method||'')){res.writeHead(405,{'Content-Type':'text/plain; charset=utf-8'});res.end('Method not allowed');return;}
+  const pathname=url.pathname.slice(posthogProxyPrefix.length)||'/',upstreamHost=pathname.startsWith('/static/')||pathname.startsWith('/array/')?posthogAssetHost:posthogApiHost,target=new URL(`${pathname}${url.search}`,`https://${upstreamHost}`),headers=new Headers();
+  for(const [name,value] of Object.entries(req.headers)){
+    if(value===undefined||['host','cookie','connection','content-length','x-forwarded-for','x-real-ip'].includes(name.toLowerCase()))continue;
+    (Array.isArray(value)?value:[value]).forEach(item=>headers.append(name,String(item)));
+  }
+  headers.set('host',upstreamHost);if(req.headers.host)headers.set('x-forwarded-host',req.headers.host);
+  let body;
+  if(req.method==='POST'){
+    const chunks=[];let length=0;for await(const chunk of req){length+=chunk.length;if(length>256*1024){res.writeHead(413,{'Content-Type':'text/plain; charset=utf-8'});res.end('Payload too large');return;}chunks.push(chunk);}body=Buffer.concat(chunks);
+  }
   try{
-    const pathname=decodeURIComponent(new URL(req.url,'http://localhost').pathname),relative=pathname.replace(/^\/+/,'');
+    const upstream=await fetch(target,{method:req.method,headers,body,redirect:'follow'}),responseHeaders={};
+    upstream.headers.forEach((value,name)=>{if(!['content-encoding','content-length','transfer-encoding','connection','set-cookie'].includes(name.toLowerCase()))responseHeaders[name]=value;});
+    responseHeaders['cache-control']??='no-store';res.writeHead(upstream.status,responseHeaders);res.end(req.method==='HEAD'?undefined:Buffer.from(await upstream.arrayBuffer()));
+  }catch(error){console.error('PostHog proxy error:',error.message);res.writeHead(502,{'Content-Type':'text/plain; charset=utf-8','Cache-Control':'no-store'});res.end('Analytics gateway unavailable');}
+}
+
+const server=createServer(async(req,res)=>{
+  try{
+    const requestUrl=new URL(req.url,'http://localhost'),pathname=decodeURIComponent(requestUrl.pathname);
+    if(pathname===posthogProxyPrefix||pathname.startsWith(`${posthogProxyPrefix}/`))return proxyPostHogRequest(req,res,requestUrl);
+    if(!production)return vite.middlewares(req,res,()=>{res.statusCode=404;res.end('Not found');});
+    const relative=pathname.replace(/^\/+/,'');
     const folder=relative.split('/')[0];
     if(publicAssetFolders.has(folder)){
       const assetRoot=resolve(root,folder),assetPath=resolve(root,relative);
