@@ -50,7 +50,7 @@ renderer.toneMappingExposure = 1.05;
 
 // Render the 3D world in discrete frames for a stop-motion feel while the
 // gameplay simulation, input, audio, and networking continue at full speed.
-const STOP_MOTION_ENABLED=true,STOP_MOTION_FPS=10;
+const STOP_MOTION_ENABLED=false,STOP_MOTION_FPS=10;
 const STOP_MOTION_FRAME_MS=1000/STOP_MOTION_FPS;
 let lastStopMotionRenderAt=null;
 
